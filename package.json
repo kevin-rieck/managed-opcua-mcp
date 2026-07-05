@@ -1,0 +1,53 @@
+{
+  "name": "opcua-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for scoped OPC UA read access and operator-approved semantic controls.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "opcua-mcp": "./dist/cli/index.js"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "examples/local.config.yaml"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('coverage',{recursive:true,force:true})\"",
+    "dev": "tsx src/cli/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "audit:prod": "npm audit --omit=dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.15.0",
+    "commander": "^12.1.0",
+    "node-opcua": "^2.153.0",
+    "yaml": "^2.8.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^22.13.0",
+    "@vitest/coverage-v8": "^3.2.0",
+    "eslint": "^9.30.0",
+    "eslint-plugin-security": "^3.0.1",
+    "prettier": "^3.6.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.35.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,24 @@
+version: 1
+
+server:
+  mode: readOnly
+
+connection:
+  endpointUrl: opc.tcp://localhost:4840
+  securityMode: None
+  securityPolicy: None
+  auth:
+    type: anonymous
+
+readScope:
+  defaultDepth: 3
+  maxDepth: 10
+  maxReadBatchSize: 50
+  roots:
+    - nodeId: ns=2;s=Machine
+      label: machine
+      description: Main machine address space.
+
+audit:
+  file: ./audit.jsonl
+  maxReasonLength: 1000

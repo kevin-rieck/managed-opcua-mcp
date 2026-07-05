@@ -1,0 +1,60 @@
+# Copy to opcua-mcp.local.yaml before editing. *.local.yaml is gitignored.
+# Write controls must only target simulator, test, or otherwise safe nodes approved by an Operator.
+
+version: 1
+
+server:
+  mode: readWrite # readOnly | readWrite
+
+connection:
+  endpointUrl: opc.tcp://localhost:4840
+  securityMode: None
+  securityPolicy: None
+  auth:
+    type: anonymous
+
+readScope:
+  defaultDepth: 3
+  maxDepth: 10
+  maxReadBatchSize: 50
+  roots:
+    - nodeId: ns=2;s=Machine
+      label: machine
+      description: Main machine address space.
+      depth: 5
+  nodes:
+    - nodeId: ns=2;s=Machine.State
+      label: machine_state
+      description: Current machine operating state.
+      dataType: Int32
+      allowedValues:
+        - label: idle
+          value: 0
+        - label: automatic
+          value: 1
+  exclude:
+    - nodeId: ns=2;s=Machine.Diagnostics
+      kind: subtree
+
+audit:
+  file: ./audit.jsonl
+  maxReasonLength: 1000
+
+controls:
+  enabled: false # Set true only after Operator review.
+  defaults:
+    cooldownMs: 1000
+    mediumConfirmationTtlMs: 60000
+  items:
+    - name: set_motor_speed
+      group: line_1/motor_3
+      description: Sets the motor speed setpoint.
+      nodeId: ns=2;s=Motor.SpeedSetpoint
+      dataType: Double
+      unit: rpm
+      min: 0
+      max: 1800
+      riskLevel: medium
+      riskNote: Changes motor speed; verify downstream equipment is ready.
+      cooldownMs: 5000
+      requireCurrentValueForConfirmation: true

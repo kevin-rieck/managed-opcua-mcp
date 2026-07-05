@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime / local state
+*.log
+*.jsonl
+audit.jsonl
+*.pid
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+certs/
+secrets/
+
+# Local configs that may contain endpoint details
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Tooling
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Test artifacts
+.nyc_output/
+.tmp/
+tmp/
+
+# Ephemeral local issue drafts
+docs/issues/
