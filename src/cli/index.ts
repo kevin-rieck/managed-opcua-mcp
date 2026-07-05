@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { z } from 'zod';
+import { JsonlAuditSink } from '../audit/jsonl-audit-sink.js';
 import { loadConfigFile } from '../config/load-config.js';
+import { startMcpServer } from '../mcp/server.js';
+import { NodeOpcUaGateway } from '../opcua/node-opcua-gateway.js';
 
 const program = new Command();
 
@@ -30,8 +33,12 @@ program
   .description('Start the MCP server over stdio')
   .action(async (options: { config: string }) => {
     const loaded = await loadConfigFile(options.config);
-    console.error(`Loaded config ${loaded.configHash}. MCP serve is not implemented yet.`);
-    process.exitCode = 1;
+    await startMcpServer({
+      config: loaded.config,
+      configHash: loaded.configHash,
+      gateway: new NodeOpcUaGateway(),
+      auditSink: new JsonlAuditSink(loaded.config.audit.file),
+    });
   });
 
 program
