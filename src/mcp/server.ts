@@ -5,7 +5,7 @@ import type { AuditSink } from '../audit/audit-sink.js';
 import type { OpcUaGateway } from '../opcua/gateway.js';
 import {
   buildConfigSummaryResource,
-  buildReadScopeResource,
+  buildReadEntryPointsResource,
   buildStatusResource,
   jsonResource,
 } from './resources.js';
@@ -43,20 +43,25 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
   );
 
   server.registerResource(
-    'read_scope',
-    'opcua://read-scope',
+    'read_entry_points',
+    'opcua://read-entry-points',
     {
-      title: 'OPC UA MCP Server Read Scope',
-      description: 'Configured Read Scope roots, explicit Nodes, and exclusions without live browsing.',
+      title: 'OPC UA MCP Server Read Entry Points',
+      description: 'Configured Read Entry Points for discovery without live browsing.',
       mimeType: 'application/json',
     },
-    () => jsonResource('opcua://read-scope', buildReadScopeResource(dependencies.config)),
+    () =>
+      jsonResource(
+        'opcua://read-entry-points',
+        buildReadEntryPointsResource(dependencies.config),
+      ),
   );
 
   return server;
 }
 
 export async function startMcpServer(dependencies: McpServerDependencies): Promise<void> {
+  void dependencies.gateway.connect();
   const server = createMcpServer(dependencies);
   await server.connect(new StdioServerTransport());
 }

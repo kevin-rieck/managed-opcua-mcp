@@ -1,7 +1,7 @@
-version: 1
+# This example omits controls, so no Control Surface is exposed.
+# OPC UA Server credentials and roles enforce read authorization.
 
-server:
-  mode: readOnly
+version: 1
 
 connection:
   endpointUrl: opc.tcp://localhost:4840
@@ -10,9 +10,9 @@ connection:
   auth:
     type: anonymous
 
-readScope:
-  defaultDepth: 3
-  maxDepth: 10
+read:
+  defaultBrowseDepth: 1
+  maxBrowseDepth: 10
   maxReadBatchSize: 50
   roots:
     - nodeId: ns=2;s=Machine

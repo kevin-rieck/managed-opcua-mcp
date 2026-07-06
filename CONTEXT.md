@@ -25,19 +25,19 @@ An operation that can change state in the OPC UA Server, such as writing a value
 _Avoid_: write, command
 
 **Control Surface**:
-The MCP tools and configuration entries that allow agents to perform Semantic Controls.
+The MCP tools exposed for listing, preparing, committing, and performing Semantic Controls.
 _Avoid_: control mode, write access
 
-**Allowlist**:
-A local configuration rule set that names which control operations the MCP Server may expose to agents.
-_Avoid_: permissions, access list, whitelist
+**Control Catalog**:
+The Operator-defined collection of Semantic Controls exposed by the MCP Server. The Control Catalog shapes the agent-facing control interface but does not replace OPC UA Server authorization.
+_Avoid_: allowlist, permissions, access list, whitelist
 
-**Read Scope**:
-The configured portion of an OPC UA Server address space that agents may browse and read through the MCP Server.
-_Avoid_: read permissions, visible nodes
+**Read Entry Point**:
+An Operator-provided starting Node for agent browsing and discovery in an OPC UA Server address space. Read Entry Points guide navigation but are not an authorization boundary; read access is enforced by the OPC UA Server.
+_Avoid_: read permissions, read scope, visible nodes
 
 **Semantic Control**:
-An operator-approved control operation exposed to agents by name, backed by a specific OPC UA NodeId and validation rules.
+An Operator-defined Control Operation exposed to agents by name, backed by a specific OPC UA NodeId, validation rules, and safety context. Authorization for the underlying OPC UA write is enforced by the OPC UA Server.
 _Avoid_: raw write, command
 
 **Operator**:

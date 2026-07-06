@@ -34,17 +34,15 @@ function runValidateConfig(configYaml: string) {
   );
 }
 
-const readOnlyConfig = `
+const readConfig = `
 version: 1
-server:
-  mode: readOnly
 connection:
   endpointUrl: opc.tcp://localhost:4840
   securityMode: None
   securityPolicy: None
   auth:
     type: anonymous
-readScope:
+read:
   roots:
     - nodeId: ns=2;s=Machine
       label: machine
@@ -52,10 +50,8 @@ audit:
   file: ./audit.jsonl
 `;
 
-const readWriteConfig = `
+const controlConfig = `
 version: 1
-server:
-  mode: readWrite
 connection:
   endpointUrl: opc.tcp://localhost:4840
   securityMode: None
@@ -64,14 +60,13 @@ connection:
     type: usernamePassword
     username: \${OPCUA_USERNAME}
     password: \${OPCUA_PASSWORD}
-readScope:
+read:
   roots:
     - nodeId: ns=2;s=Machine
       label: machine
 audit:
   file: ./audit.jsonl
 controls:
-  enabled: true
   items:
     - name: set_motor_speed
       description: Sets the motor speed setpoint.
@@ -85,9 +80,9 @@ controls:
 `;
 
 describe('validate-config CLI', () => {
-  it('prints a deterministic non-secret config hash for valid read-only config', () => {
-    const first = runValidateConfig(readOnlyConfig);
-    const second = runValidateConfig(readOnlyConfig);
+  it('prints a deterministic non-secret config hash for valid read config', () => {
+    const first = runValidateConfig(readConfig);
+    const second = runValidateConfig(readConfig);
 
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
@@ -98,8 +93,8 @@ describe('validate-config CLI', () => {
     expect(secondBody.configHash).toBe(firstBody.configHash);
   });
 
-  it('accepts representative readWrite config with secret environment references', () => {
-    const result = runValidateConfig(readWriteConfig);
+  it('accepts representative control config with secret environment references and optional controls.enabled', () => {
+    const result = runValidateConfig(controlConfig);
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('configHash');
@@ -107,7 +102,7 @@ describe('validate-config CLI', () => {
   });
 
   it('rejects unknown fields with clear validation errors and no stack trace', () => {
-    const result = runValidateConfig(`${readOnlyConfig}unexpectedField: true\n`);
+    const result = runValidateConfig(`${readConfig}unexpectedField: true\n`);
 
     expect(result.status).toBe(1);
     expect(result.stderr).not.toContain('ZodError');

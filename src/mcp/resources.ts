@@ -23,10 +23,6 @@ export async function buildStatusResource({
     onlineValidation: { state: 'pending' },
     controls,
     audit: auditHealth,
-    deployment: {
-      mode: config.server.mode,
-      controlsEnabled: config.controls?.enabled ?? false,
-    },
     configHash,
   };
 }
@@ -34,8 +30,8 @@ export async function buildStatusResource({
 export function buildConfigSummaryResource(config: AppConfig, configHash: string): Record<string, unknown> {
   return {
     version: config.version,
-    server: config.server,
     connection: redactConnection(config.connection),
+    read: config.read,
     audit: config.audit,
     controls:
       config.controls === undefined
@@ -49,8 +45,8 @@ export function buildConfigSummaryResource(config: AppConfig, configHash: string
   };
 }
 
-export function buildReadScopeResource(config: AppConfig): Record<string, unknown> {
-  return config.readScope;
+export function buildReadEntryPointsResource(config: AppConfig): Record<string, unknown> {
+  return config.read;
 }
 
 export function jsonResource(uri: string, value: unknown) {

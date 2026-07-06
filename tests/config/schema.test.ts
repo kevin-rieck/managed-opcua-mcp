@@ -1,21 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { appConfigSchema } from '../../src/config/schema.js';
 
-const baseReadWriteConfig = {
+const baseConfig = {
   version: 1,
-  server: { mode: 'readWrite' },
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',
     securityPolicy: 'None',
     auth: { type: 'anonymous' },
   },
-  readScope: {
+  read: {
     roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine' }],
   },
   audit: { file: './audit.jsonl' },
   controls: {
-    enabled: false,
     items: [
       {
         name: 'set_motor_speed',
@@ -34,23 +32,37 @@ const baseReadWriteConfig = {
 } as const;
 
 describe('appConfigSchema', () => {
-  it('accepts the canonical readWrite shape', () => {
-    expect(appConfigSchema.parse(baseReadWriteConfig).server.mode).toBe('readWrite');
+  it('accepts the canonical simplified config shape', () => {
+    const parsed = appConfigSchema.parse(baseConfig);
+
+    expect(parsed.controls?.enabled).toBe(true);
+    expect(parsed.read.defaultBrowseDepth).toBe(1);
+    expect(parsed.read.maxBrowseDepth).toBe(10);
+    expect(parsed.read.maxReadBatchSize).toBe(50);
+  });
+
+  it('accepts config without controls and exposes no Control Surface', () => {
+    const withoutControls: Record<string, unknown> = structuredClone(baseConfig);
+    delete withoutControls['controls'];
+
+    const parsed = appConfigSchema.parse(withoutControls);
+
+    expect(parsed.controls).toBeUndefined();
   });
 
   it('rejects unknown config fields', () => {
     const result = appConfigSchema.safeParse({
-      ...baseReadWriteConfig,
+      ...baseConfig,
       accidentalPolicyTypo: true,
     });
 
     expect(result.success).toBe(false);
   });
 
-  it('rejects duplicate Read Scope labels', () => {
+  it('rejects duplicate Read Entry Point labels', () => {
     const result = appConfigSchema.safeParse({
-      ...baseReadWriteConfig,
-      readScope: {
+      ...baseConfig,
+      read: {
         roots: [
           { nodeId: 'ns=2;s=Machine', label: 'machine' },
           { nodeId: 'ns=2;s=OtherMachine', label: 'machine' },
@@ -61,25 +73,41 @@ describe('appConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects controls in readOnly mode', () => {
+  it('rejects duplicate Read Entry Point and Semantic Control agent-facing names', () => {
     const result = appConfigSchema.safeParse({
-      ...baseReadWriteConfig,
-      server: { mode: 'readOnly' },
+      ...baseConfig,
+      controls: {
+        items: [
+          {
+            name: 'machine',
+            description: 'Sets the motor speed setpoint.',
+            nodeId: 'ns=2;s=Motor.SpeedSetpoint',
+            dataType: 'Double',
+            unit: 'rpm',
+            min: 0,
+            max: 1800,
+            riskLevel: 'medium',
+            riskNote: 'Changes motor speed.',
+          },
+        ],
+      },
     });
 
     expect(result.success).toBe(false);
   });
 
-  it('requires controls in readWrite mode', () => {
-    const withoutControls: Record<string, unknown> = { ...baseReadWriteConfig };
-    delete withoutControls['controls'];
-    const result = appConfigSchema.safeParse(withoutControls);
+  it('rejects the old server mode and readScope config shape', () => {
+    const result = appConfigSchema.safeParse({
+      ...baseConfig,
+      server: { mode: 'readWrite' },
+      readScope: { roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine' }] },
+    });
 
     expect(result.success).toBe(false);
   });
 
   it('rejects high-risk controls because v1 does not support them', () => {
-    const config = structuredClone(baseReadWriteConfig);
+    const config = structuredClone(baseConfig);
     Object.assign(config.controls.items[0], { riskLevel: 'high' });
 
     expect(appConfigSchema.safeParse(config).success).toBe(false);
@@ -87,9 +115,9 @@ describe('appConfigSchema', () => {
 
   it('rejects literal username/password secrets', () => {
     const result = appConfigSchema.safeParse({
-      ...baseReadWriteConfig,
+      ...baseConfig,
       connection: {
-        ...baseReadWriteConfig.connection,
+        ...baseConfig.connection,
         auth: { type: 'usernamePassword', username: 'operator', password: 'secret' },
       },
     });
@@ -97,19 +125,20 @@ describe('appConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('requires readWrite controls to explicitly set controls.enabled', () => {
-    const config: Record<string, unknown> = structuredClone(baseReadWriteConfig);
-    const controls = config['controls'] as Record<string, unknown>;
-    delete controls['enabled'];
+  it('accepts controls.enabled as an optional commissioning switch', () => {
+    const parsed = appConfigSchema.parse({
+      ...baseConfig,
+      controls: { ...baseConfig.controls, enabled: false },
+    });
 
-    expect(appConfigSchema.safeParse(config).success).toBe(false);
+    expect(parsed.controls?.enabled).toBe(false);
   });
 
   it('accepts username/password environment references', () => {
     const result = appConfigSchema.safeParse({
-      ...baseReadWriteConfig,
+      ...baseConfig,
       connection: {
-        ...baseReadWriteConfig.connection,
+        ...baseConfig.connection,
         auth: {
           type: 'usernamePassword',
           username: '${OPCUA_USERNAME}',
@@ -123,9 +152,8 @@ describe('appConfigSchema', () => {
 
   it('validates numeric, string, enum-like, and boolean Semantic Control shapes', () => {
     const config = {
-      ...baseReadWriteConfig,
+      ...baseConfig,
       controls: {
-        ...baseReadWriteConfig.controls,
         items: [
           {
             name: 'set_motor_speed',
@@ -179,16 +207,14 @@ describe('appConfigSchema', () => {
     expect(appConfigSchema.safeParse(config).success).toBe(true);
   });
 
-  it('rejects invalid Read Scope limits and exclusion conflicts', () => {
+  it('rejects invalid read limits', () => {
     const config = {
-      ...baseReadWriteConfig,
-      readScope: {
-        defaultDepth: 5,
-        maxDepth: 3,
+      ...baseConfig,
+      read: {
+        defaultBrowseDepth: 5,
+        maxBrowseDepth: 3,
         maxReadBatchSize: 0,
         roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine' }],
-        nodes: [{ nodeId: 'ns=2;s=Machine.Secret', label: 'machine_secret' }],
-        exclude: [{ nodeId: 'ns=2;s=Machine.Secret', kind: 'exact' }],
       },
     };
 

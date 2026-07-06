@@ -48,67 +48,20 @@ const allowedValueSchema = z
   })
   .strict();
 
-const readNodeSchema = labelledNodeSchema
-  .extend({
-    dataType: z.enum(writableDataTypes).optional(),
-    unit: z.string().min(1).optional(),
-    allowedValues: z.array(allowedValueSchema).min(1).optional(),
-    falseLabel: z.string().regex(snakeCase).optional(),
-    trueLabel: z.string().regex(snakeCase).optional(),
-  })
-  .strict()
-  .superRefine((node, ctx) => {
-    const hasBooleanLabels = node.falseLabel !== undefined || node.trueLabel !== undefined;
-    if (hasBooleanLabels && (node.falseLabel === undefined || node.trueLabel === undefined)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Boolean mappings require both falseLabel and trueLabel.',
-      });
-    }
-    if (node.allowedValues !== undefined && node.dataType === 'Boolean') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Boolean mappings use falseLabel/trueLabel, not allowedValues.',
-      });
-    }
-  });
-
-const readScopeSchema = z
+const readSchema = z
   .object({
-    defaultDepth: z.number().int().min(0).default(3),
-    maxDepth: z.number().int().min(0).default(10),
+    defaultBrowseDepth: z.number().int().min(0).default(1),
+    maxBrowseDepth: z.number().int().min(0).default(10),
     maxReadBatchSize: z.number().int().min(1).max(500).default(50),
-    roots: z
-      .array(labelledNodeSchema.extend({ depth: z.number().int().min(0).optional() }).strict())
-      .default([]),
-    nodes: z.array(readNodeSchema).default([]),
-    exclude: z
-      .array(
-        z
-          .object({
-            nodeId: z.string().min(1),
-            kind: z.enum(['exact', 'subtree']),
-          })
-          .strict(),
-      )
-      .default([]),
+    roots: z.array(labelledNodeSchema).default([]),
   })
   .strict()
-  .superRefine((scope, ctx) => {
-    if (scope.defaultDepth > scope.maxDepth) {
+  .superRefine((read, ctx) => {
+    if (read.defaultBrowseDepth > read.maxBrowseDepth) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'readScope.defaultDepth cannot exceed maxDepth.',
+        message: 'read.defaultBrowseDepth cannot exceed maxBrowseDepth.',
       });
-    }
-    const explicitNodeIds = new Set(scope.nodes.map((node) => node.nodeId));
-    for (const excluded of scope.exclude) {
-      if (explicitNodeIds.has(excluded.nodeId)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `NodeId ${excluded.nodeId} is both explicitly readable and excluded.`,
-        });
-      }
     }
   });
 
@@ -214,7 +167,7 @@ const controlItemSchema = z
 
 const controlsSchema = z
   .object({
-    enabled: z.boolean(),
+    enabled: z.boolean().default(true),
     defaults: z
       .object({
         cooldownMs: z.number().int().min(0).default(1000),
@@ -229,29 +182,15 @@ const controlsSchema = z
 export const appConfigSchema = z
   .object({
     version: z.literal(1),
-    server: z.object({ mode: z.enum(['readOnly', 'readWrite']) }).strict(),
     connection: connectionSchema,
-    readScope: readScopeSchema,
+    read: readSchema.default({}),
     audit: auditSchema,
     controls: controlsSchema.optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
-    if (config.server.mode === 'readOnly' && config.controls !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'readOnly mode rejects controls config.',
-      });
-    }
-    if (config.server.mode === 'readWrite' && config.controls === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'readWrite mode requires controls config.',
-      });
-    }
-
     const names = new Set<string>();
-    for (const root of config.readScope.roots) {
+    for (const root of config.read.roots) {
       if (root.label !== undefined) {
         if (names.has(root.label)) {
           ctx.addIssue({
@@ -260,17 +199,6 @@ export const appConfigSchema = z
           });
         }
         names.add(root.label);
-      }
-    }
-    for (const node of config.readScope.nodes) {
-      if (node.label !== undefined) {
-        if (names.has(node.label)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `Duplicate agent-facing name ${node.label}.`,
-          });
-        }
-        names.add(node.label);
       }
     }
     for (const control of config.controls?.items ?? []) {

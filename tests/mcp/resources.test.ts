@@ -7,20 +7,17 @@ import type { OpcUaGateway, OpcUaStatus } from '../../src/opcua/gateway.js';
 
 const config = appConfigSchema.parse({
   version: 1,
-  server: { mode: 'readWrite' },
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',
     securityPolicy: 'None',
     auth: { type: 'usernamePassword', username: '${OPCUA_USERNAME}', password: '${OPCUA_PASSWORD}' },
   },
-  readScope: {
-    defaultDepth: 2,
-    maxDepth: 5,
+  read: {
+    defaultBrowseDepth: 2,
+    maxBrowseDepth: 5,
     maxReadBatchSize: 25,
-    roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.', depth: 3 }],
-    nodes: [{ nodeId: 'ns=2;s=Machine.State', label: 'machine_state', dataType: 'Int32' }],
-    exclude: [{ nodeId: 'ns=2;s=Machine.Secret', kind: 'subtree' }],
+    roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.' }],
   },
   audit: { file: './audit.jsonl' },
   controls: {
@@ -64,17 +61,17 @@ describe('MCP metadata resources', () => {
         onlineValidation: { state: 'pending' },
         controls: { configured: 1, lowRisk: 0, mediumRisk: 1, enabled: false },
         audit: { healthy: true },
-        deployment: { mode: 'readWrite', controlsEnabled: false },
         configHash: 'abc123',
       });
       expect(JSON.stringify(status)).not.toContain('Secret.stack');
+      expect(JSON.stringify(status)).not.toContain('readWrite');
     } finally {
       await client.close();
       await server.close();
     }
   });
 
-  it('exposes a redacted config summary and unexpanded Read Scope summary', async () => {
+  it('exposes a redacted config summary and unexpanded Read Entry Points summary', async () => {
     const { client, server } = await connectTestClient(config, {
       state: 'disconnected',
       connectionGeneration: 0,
@@ -82,28 +79,32 @@ describe('MCP metadata resources', () => {
 
     try {
       const configSummary = await readJsonResource(client, 'opcua://config/summary');
-      const readScope = await readJsonResource(client, 'opcua://read-scope');
+      const readEntryPoints = await readJsonResource(client, 'opcua://read-entry-points');
 
       expect(configSummary).toMatchObject({
         version: 1,
-        server: { mode: 'readWrite' },
         connection: {
           endpointUrl: 'opc.tcp://localhost:4840',
           securityMode: 'None',
           securityPolicy: 'None',
           auth: { type: 'usernamePassword', username: '[redacted]', password: '[redacted]' },
         },
+        read: {
+          defaultBrowseDepth: 2,
+          maxBrowseDepth: 5,
+          maxReadBatchSize: 25,
+          roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.' }],
+        },
         audit: { file: './audit.jsonl', maxReasonLength: 1000 },
         controls: { enabled: false, configured: 1 },
         configHash: 'abc123',
       });
-      expect(readScope).toMatchObject({
-        defaultDepth: 2,
-        maxDepth: 5,
+      expect(configSummary).not.toHaveProperty('server');
+      expect(readEntryPoints).toMatchObject({
+        defaultBrowseDepth: 2,
+        maxBrowseDepth: 5,
         maxReadBatchSize: 25,
-        roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', depth: 3 }],
-        nodes: [{ nodeId: 'ns=2;s=Machine.State', label: 'machine_state', dataType: 'Int32' }],
-        exclude: [{ nodeId: 'ns=2;s=Machine.Secret', kind: 'subtree' }],
+        roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine' }],
       });
     } finally {
       await client.close();

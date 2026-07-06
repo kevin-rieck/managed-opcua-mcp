@@ -1,14 +1,15 @@
 # OPC UA MCP Server
 
-A TypeScript MCP server that exposes scoped OPC UA read access and Operator-approved Semantic Controls for safe agent interaction.
+A TypeScript MCP server that exposes OPC UA read access through server-side authorization and Operator-defined Semantic Controls for safe agent interaction.
 
 See [`docs/plan.md`](./docs/plan.md) and [`CONTEXT.md`](./CONTEXT.md).
 
 ## Security posture
 
 - No arbitrary OPC UA writes.
-- Reads are limited by configured Read Scopes.
-- Writes use Operator-approved Semantic Controls only.
+- Reads rely on OPC UA Server credentials and roles for authorization.
+- Optional Read Entry Points guide agent discovery.
+- Writes use Operator-defined Semantic Controls only.
 - High-risk controls are rejected in v1.
 - Control attempts are audited.
 - Secrets must be provided through environment variables, not literal YAML values.
