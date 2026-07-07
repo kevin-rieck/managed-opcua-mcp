@@ -3,9 +3,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import type { AppConfig } from '../config/schema.js';
 import type { AuditSink } from '../audit/audit-sink.js';
+import type { ControlItem } from '../config/schema.js';
 import { getReadEntryPoints, resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
 import { requireConnectedOpcUa } from './live-opcua-preflight.js';
-import type { BrowseNodeResult, OpcUaGateway } from '../opcua/gateway.js';
+import type { BrowseNodeResult, OpcUaGateway, ReadValueResult } from '../opcua/gateway.js';
 import {
   buildConfigSummaryResource,
   buildReadEntryPointsResource,
@@ -80,7 +81,53 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       if (label !== undefined) args.label = label;
       if (depth !== undefined) args.depth = depth;
       const body = await browseNodeTool(dependencies, args);
-      return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }] };
+      return toolJson(body);
+    },
+  );
+
+  server.registerTool(
+    'read_node',
+    {
+      title: 'Read OPC UA Node',
+      description: 'Read one OPC UA Node by NodeId or configured label.',
+      inputSchema: {
+        nodeId: z.string().min(1).optional(),
+        label: z.string().min(1).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ nodeId, label }) => {
+      const args: ReadNodeIdentifier = {};
+      if (nodeId !== undefined) args.nodeId = nodeId;
+      if (label !== undefined) args.label = label;
+      const body = await readNodeTool(dependencies, args);
+      return toolJson(body);
+    },
+  );
+
+  server.registerTool(
+    'read_nodes',
+    {
+      title: 'Read OPC UA Nodes',
+      description: 'Read a bounded batch of OPC UA Nodes by NodeId or configured label.',
+      inputSchema: {
+        identifiers: z
+          .array(
+            z.object({ nodeId: z.string().min(1).optional(), label: z.string().min(1).optional() }),
+          )
+          .min(1),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ identifiers }) => {
+      const readIdentifiers = identifiers.map((identifier) => {
+        const readIdentifier: ReadNodeIdentifier = {};
+        if (identifier.nodeId !== undefined) readIdentifier.nodeId = identifier.nodeId;
+        if (identifier.label !== undefined) readIdentifier.label = identifier.label;
+        return readIdentifier;
+      });
+      const body = await readNodesTool(dependencies, { identifiers: readIdentifiers });
+      return toolJson(body);
     },
   );
 
@@ -92,6 +139,29 @@ interface BrowseNodeArgs {
   label?: string;
   depth?: number;
 }
+
+interface ReadNodeIdentifier {
+  nodeId?: string;
+  label?: string;
+}
+
+interface ReadNodesArgs {
+  identifiers: ReadNodeIdentifier[];
+}
+
+interface ResolvedReadIdentifier {
+  nodeId: string;
+  label?: string;
+  control?: ControlItem;
+}
+
+interface ReadResolutionError extends Record<string, unknown> {
+  ok: false;
+  code: string;
+  message: string;
+}
+
+type ReadResolution = ResolvedReadIdentifier | ReadResolutionError;
 
 async function browseNodeTool(
   dependencies: McpServerDependencies,
@@ -147,8 +217,198 @@ async function browseFromNodeId(
   }
 }
 
+async function readNodeTool(
+  dependencies: McpServerDependencies,
+  identifier: ReadNodeIdentifier,
+): Promise<Record<string, unknown>> {
+  const results = await readNodesTool(dependencies, { identifiers: [identifier] });
+  const maybeResults = results['results'];
+  if (Array.isArray(maybeResults)) {
+    const result = maybeResults[0] as unknown;
+    if (isRecord(result) && result['ok'] === false) return result;
+    return { ok: results['ok'], result };
+  }
+  return results;
+}
+
+async function readNodesTool(
+  dependencies: McpServerDependencies,
+  args: ReadNodesArgs,
+): Promise<Record<string, unknown>> {
+  if (args.identifiers.length > dependencies.config.read.maxReadBatchSize) {
+    return {
+      ok: false,
+      code: 'read_batch_too_large',
+      message: `Batch size ${String(args.identifiers.length)} exceeds configured maximum ${String(dependencies.config.read.maxReadBatchSize)}.`,
+    };
+  }
+
+  const resolved = args.identifiers.map((identifier) =>
+    resolveReadIdentifier(dependencies.config, identifier),
+  );
+  const hasResolutionError = resolved.some(isReadResolutionError);
+  const hasLiveRead = resolved.some((identifier) => !isReadResolutionError(identifier));
+  let preflightError: Record<string, unknown> | undefined;
+  if (hasLiveRead) {
+    const preflight = await requireConnectedOpcUa(dependencies.gateway);
+    if (!preflight.ok) {
+      if (!hasResolutionError) return preflight.response;
+      preflightError = preflight.response;
+    }
+  }
+
+  const results = await Promise.all(
+    resolved.map(async (identifier) => {
+      if (isReadResolutionError(identifier)) return identifier;
+      if (preflightError !== undefined) return buildReadPreflightError(identifier, preflightError);
+      return readResolvedNode(dependencies.gateway, identifier);
+    }),
+  );
+
+  return { ok: results.every((result) => result['ok'] === true), results };
+}
+
+function resolveReadIdentifier(config: AppConfig, identifier: ReadNodeIdentifier): ReadResolution {
+  if (identifier.nodeId !== undefined && identifier.label !== undefined) {
+    return {
+      ok: false,
+      code: 'ambiguous_identifier',
+      message: 'Provide either nodeId or label, not both.',
+    };
+  }
+  if (identifier.nodeId === undefined && identifier.label === undefined) {
+    return { ok: false, code: 'missing_identifier', message: 'Provide nodeId or label.' };
+  }
+
+  if (identifier.label !== undefined) {
+    const labelled = findConfiguredReadLabel(config, identifier.label);
+    if (labelled === undefined) {
+      return {
+        ok: false,
+        label: identifier.label,
+        code: 'unknown_read_label',
+        message: `Unknown read label: ${identifier.label}`,
+      };
+    }
+    return labelled;
+  }
+
+  const nodeId = identifier.nodeId;
+  if (nodeId === undefined) {
+    return { ok: false, code: 'missing_identifier', message: 'Provide nodeId or label.' };
+  }
+  const metadata = findReadMetadataByNodeId(config, nodeId);
+  return metadata ?? { nodeId };
+}
+
+async function readResolvedNode(
+  gateway: OpcUaGateway,
+  identifier: ResolvedReadIdentifier,
+): Promise<Record<string, unknown>> {
+  try {
+    const read = await gateway.read(identifier.nodeId);
+    return buildReadSuccess(read, identifier);
+  } catch (error) {
+    return {
+      ok: false,
+      nodeId: identifier.nodeId,
+      ...(identifier.label !== undefined ? { label: identifier.label } : {}),
+      ...sanitizeToolError(error, 'opcua_read_failed'),
+    };
+  }
+}
+
+function buildReadPreflightError(
+  identifier: ResolvedReadIdentifier,
+  preflightError: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...preflightError,
+    nodeId: identifier.nodeId,
+    ...(identifier.label !== undefined ? { label: identifier.label } : {}),
+  };
+}
+
+function buildReadSuccess(
+  read: ReadValueResult,
+  identifier: ResolvedReadIdentifier,
+): Record<string, unknown> {
+  const normalized = normalizeReadValue(identifier.control, read.value);
+  return {
+    ok: true,
+    nodeId: read.nodeId,
+    ...(identifier.label !== undefined ? { label: identifier.label } : {}),
+    value: normalized.value,
+    ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
+    ...(read.dataType !== undefined ? { dataType: read.dataType } : {}),
+    ...(identifier.control !== undefined && 'unit' in identifier.control
+      ? { unit: identifier.control.unit }
+      : {}),
+    ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
+    ...(read.sourceTimestamp !== undefined ? { sourceTimestamp: read.sourceTimestamp } : {}),
+    ...(read.serverTimestamp !== undefined ? { serverTimestamp: read.serverTimestamp } : {}),
+  };
+}
+
 function resolveBrowseDepth(config: AppConfig, requestedDepth: number | undefined): number {
   return Math.min(requestedDepth ?? config.read.defaultBrowseDepth, config.read.maxBrowseDepth);
+}
+
+function findConfiguredReadLabel(
+  config: AppConfig,
+  label: string,
+): ResolvedReadIdentifier | undefined {
+  const root = config.read.roots.find((candidate) => candidate.label === label);
+  if (root !== undefined) return { nodeId: root.nodeId, label };
+
+  const control = config.controls?.items.find((candidate) => candidate.name === label);
+  if (control !== undefined) return { nodeId: control.nodeId, label: control.name, control };
+  return undefined;
+}
+
+function findReadMetadataByNodeId(
+  config: AppConfig,
+  nodeId: string,
+): ResolvedReadIdentifier | undefined {
+  const root = config.read.roots.find((candidate) => candidate.nodeId === nodeId);
+  if (root?.label !== undefined) return { nodeId, label: root.label };
+
+  const control = config.controls?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (control !== undefined) return { nodeId, label: control.name, control };
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isReadResolutionError(value: ReadResolution): value is ReadResolutionError {
+  return 'ok' in value;
+}
+
+function normalizeReadValue(
+  control: ControlItem | undefined,
+  value: unknown,
+): { value: unknown; rawValue: unknown; rawValueIncluded: boolean } {
+  if (control?.dataType === 'Boolean' && typeof value === 'boolean') {
+    return {
+      value: value ? control.trueLabel : control.falseLabel,
+      rawValue: value,
+      rawValueIncluded: true,
+    };
+  }
+
+  if (control !== undefined && 'allowedValues' in control) {
+    const allowed = control.allowedValues.find((candidate) => candidate.value === value);
+    if (allowed !== undefined)
+      return { value: allowed.label, rawValue: value, rawValueIncluded: true };
+  }
+
+  return { value, rawValue: value, rawValueIncluded: false };
+}
+
+function toolJson(body: Record<string, unknown>): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }] };
 }
 
 function sanitizeToolError(error: unknown, defaultCode: string): { code: string; message: string } {

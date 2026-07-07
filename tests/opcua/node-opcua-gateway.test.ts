@@ -110,6 +110,40 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     });
   });
 
+  it('reads values from connected sessions with OPC UA status and timestamps', async () => {
+    const session = {
+      close: () => Promise.resolve(),
+      read: vi.fn(() =>
+        Promise.resolve({
+          value: { dataType: { toString: () => 'Double' }, value: 72.5 },
+          statusCode: { toString: () => 'Good' },
+          sourceTimestamp: new Date('2026-07-07T10:00:00.000Z'),
+          serverTimestamp: new Date('2026-07-07T10:00:01.000Z'),
+        }),
+      ),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.read('ns=2;s=Machine.Temperature')).resolves.toEqual({
+      nodeId: 'ns=2;s=Machine.Temperature',
+      dataType: 'Double',
+      value: 72.5,
+      opcuaStatus: 'Good',
+      sourceTimestamp: '2026-07-07T10:00:00.000Z',
+      serverTimestamp: '2026-07-07T10:00:01.000Z',
+    });
+    expect(session.read).toHaveBeenCalledWith({
+      nodeId: 'ns=2;s=Machine.Temperature',
+      attributeId: 13,
+    });
+  });
+
   it('reports sanitized connection failures, then reconnects with a new generation', async () => {
     vi.useFakeTimers();
     const failedClient = rejectingClient(

@@ -11,6 +11,19 @@ import type {
 export interface OpcUaSessionLike {
   close(): Promise<void>;
   browse?(description: OpcUaBrowseDescription): Promise<OpcUaBrowseResponse>;
+  read?(description: OpcUaReadDescription): Promise<OpcUaDataValueLike>;
+}
+
+export interface OpcUaReadDescription {
+  nodeId: string;
+  attributeId: 13;
+}
+
+export interface OpcUaDataValueLike {
+  value?: { dataType?: unknown; value?: unknown } | null;
+  statusCode?: unknown;
+  sourceTimestamp?: Date | string | null;
+  serverTimestamp?: Date | string | null;
 }
 
 export interface OpcUaBrowseDescription {
@@ -174,9 +187,13 @@ export class NodeOpcUaGateway implements OpcUaGateway {
     return results;
   }
 
-  read(nodeId: string): Promise<ReadValueResult> {
-    void nodeId;
-    return Promise.reject(new Error('OPC UA read is not implemented yet.'));
+  async read(nodeId: string): Promise<ReadValueResult> {
+    const session = this.session;
+    if (session?.read === undefined || this.state !== 'connected')
+      throw new Error('OPC UA session is not connected.');
+
+    const dataValue = await session.read({ nodeId, attributeId: 13 });
+    return mapDataValue(nodeId, dataValue);
   }
 
   async readMany(nodeIds: string[]): Promise<ReadValueResult[]> {
@@ -257,9 +274,28 @@ function mapReference(reference: OpcUaReferenceLike, nodeId: string): BrowseNode
   return result;
 }
 
+function mapDataValue(nodeId: string, dataValue: OpcUaDataValueLike): ReadValueResult {
+  const result: ReadValueResult = { nodeId, value: dataValue.value?.value };
+  const dataType = stringifyOpcUaValue(dataValue.value?.dataType);
+  const opcuaStatus = stringifyOpcUaValue(dataValue.statusCode);
+  const sourceTimestamp = stringifyTimestamp(dataValue.sourceTimestamp);
+  const serverTimestamp = stringifyTimestamp(dataValue.serverTimestamp);
+  if (dataType !== undefined) result.dataType = dataType;
+  if (opcuaStatus !== undefined) result.opcuaStatus = opcuaStatus;
+  if (sourceTimestamp !== undefined) result.sourceTimestamp = sourceTimestamp;
+  if (serverTimestamp !== undefined) result.serverTimestamp = serverTimestamp;
+  return result;
+}
+
 function stringifyDisplayName(value: OpcUaReferenceLike['displayName']): string | undefined {
   if (typeof value === 'string') return value;
   if (value?.text !== undefined) return value.text;
+  return undefined;
+}
+
+function stringifyTimestamp(value: Date | string | null | undefined): string | undefined {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
   return undefined;
 }
 
