@@ -36,7 +36,7 @@ program
     await startMcpServer({
       config: loaded.config,
       configHash: loaded.configHash,
-      gateway: new NodeOpcUaGateway(),
+      gateway: new NodeOpcUaGateway({ connection: loaded.config.connection }),
       auditSink: new JsonlAuditSink(loaded.config.audit.file),
     });
   });
