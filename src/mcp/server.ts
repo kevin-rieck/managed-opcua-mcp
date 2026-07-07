@@ -62,6 +62,19 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       jsonResource('opcua://read-entry-points', buildReadEntryPointsResource(dependencies.config)),
   );
 
+  if ((dependencies.config.controls?.items.length ?? 0) > 0) {
+    server.registerTool(
+      'list_controls',
+      {
+        title: 'List Semantic Controls',
+        description: 'List Operator-defined Semantic Controls and their current availability.',
+        inputSchema: {},
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async () => toolJson(await listControlsTool(dependencies)),
+    );
+  }
+
   server.registerTool(
     'browse_node',
     {
@@ -162,6 +175,77 @@ interface ReadResolutionError extends Record<string, unknown> {
 }
 
 type ReadResolution = ResolvedReadIdentifier | ReadResolutionError;
+
+async function listControlsTool(
+  dependencies: McpServerDependencies,
+): Promise<Record<string, unknown>> {
+  const controls = dependencies.config.controls?.items ?? [];
+  const defaultCooldownMs = dependencies.config.controls?.defaults.cooldownMs ?? 0;
+  const controlsEnabled = dependencies.config.controls?.enabled ?? false;
+  const status = await dependencies.gateway.status();
+  const auditHealth = await dependencies.auditSink.health();
+  return {
+    ok: true,
+    controls: controls.map((control) => {
+      const unavailableReasons: Record<string, unknown>[] = [];
+      if (!controlsEnabled) {
+        unavailableReasons.push({
+          code: 'controls_disabled',
+          message: 'Semantic Controls are disabled.',
+        });
+      }
+      if (status.state !== 'connected') {
+        unavailableReasons.push({
+          code: 'opcua_disconnected',
+          message: 'OPC UA Server is not connected.',
+          connection: {
+            state: status.state,
+            connectionGeneration: status.connectionGeneration,
+          },
+        });
+      }
+      if (!auditHealth.healthy) {
+        unavailableReasons.push({
+          code: 'audit_unavailable',
+          message: `Audit logging is unavailable: ${auditHealth.reason}`,
+        });
+      }
+      return {
+        name: control.name,
+        ...(control.group !== undefined ? { group: control.group } : {}),
+        description: control.description,
+        nodeId: control.nodeId,
+        riskLevel: control.riskLevel,
+        riskNote: control.riskNote,
+        requiresConfirmation: control.riskLevel === 'medium',
+        requiresReason: control.riskLevel === 'medium',
+        ...(control.requireCurrentValueForConfirmation !== undefined
+          ? { requireCurrentValueForConfirmation: control.requireCurrentValueForConfirmation }
+          : {}),
+        value: buildControlValueMetadata(control),
+        cooldownMs: control.cooldownMs ?? defaultCooldownMs,
+        available: unavailableReasons.length === 0,
+        unavailableReasons,
+      };
+    }),
+  };
+}
+
+function buildControlValueMetadata(control: ControlItem): Record<string, unknown> {
+  if (control.dataType === 'Boolean') {
+    return { type: 'boolean', falseLabel: control.falseLabel, trueLabel: control.trueLabel };
+  }
+  if ('allowedValues' in control) {
+    return { type: 'enum', dataType: control.dataType, allowedValues: control.allowedValues };
+  }
+  return {
+    type: 'number',
+    dataType: control.dataType,
+    min: control.min,
+    max: control.max,
+    unit: control.unit,
+  };
+}
 
 async function browseNodeTool(
   dependencies: McpServerDependencies,
