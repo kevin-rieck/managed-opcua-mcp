@@ -118,6 +118,23 @@ describe('browse_node MCP tool', () => {
     }
   });
 
+  it('returns a structured not-connected response without browsing live Nodes', async () => {
+    const gateway = fakeGateway([], { state: 'connecting', connectionGeneration: 0 });
+    const { client, server } = await connectTestClient(config, gateway);
+
+    try {
+      await expect(callJsonTool(client, 'browse_node', { label: 'machine' })).resolves.toMatchObject({
+        ok: false,
+        code: 'opcua_not_connected',
+        connection: { state: 'connecting', connectionGeneration: 0 },
+      });
+      expect(gateway.browse).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('returns structured rejections for invalid labels and OPC UA browse failures', async () => {
     const gateway = fakeGateway();
     gateway.browse.mockRejectedValueOnce(
@@ -183,8 +200,8 @@ async function callJsonTool(
 
 function fakeGateway(
   results: BrowseNodeResult[] = [],
+  status: OpcUaStatus = { state: 'connected', connectionGeneration: 1 },
 ): OpcUaGateway & { browse: ReturnType<typeof vi.fn> } {
-  const status: OpcUaStatus = { state: 'connected', connectionGeneration: 1 };
   return {
     status: () => Promise.resolve(status),
     connect: () => Promise.resolve(),

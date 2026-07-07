@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../config/schema.js';
 import type { AuditSink } from '../audit/audit-sink.js';
 import { getReadEntryPoints, resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
+import { requireConnectedOpcUa } from './live-opcua-preflight.js';
 import type { BrowseNodeResult, OpcUaGateway } from '../opcua/gateway.js';
 import {
   buildConfigSummaryResource,
@@ -136,6 +137,9 @@ async function browseFromNodeId(
   start: Record<string, string>,
 ): Promise<Record<string, unknown>> {
   try {
+    const preflight = await requireConnectedOpcUa(gateway);
+    if (!preflight.ok) return preflight.response;
+
     const nodes = sanitizeBrowseResults(await gateway.browse(nodeId, depth));
     return { ok: true, mode: 'browse', start, depth, nodes };
   } catch (error) {
