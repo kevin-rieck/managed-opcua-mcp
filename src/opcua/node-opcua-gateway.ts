@@ -1,9 +1,36 @@
 import { createRequire } from 'node:module';
 import type { AppConfig } from '../config/schema.js';
-import type { BrowseNodeResult, OpcUaGateway, OpcUaStatus, ReadValueResult, WriteValueResult } from './gateway.js';
+import type {
+  BrowseNodeResult,
+  OpcUaGateway,
+  OpcUaStatus,
+  ReadValueResult,
+  WriteValueResult,
+} from './gateway.js';
 
 export interface OpcUaSessionLike {
   close(): Promise<void>;
+  browse?(description: OpcUaBrowseDescription): Promise<OpcUaBrowseResponse>;
+}
+
+export interface OpcUaBrowseDescription {
+  nodeId: string;
+  browseDirection: 'Forward';
+  referenceTypeId: 'HierarchicalReferences';
+  includeSubtypes: true;
+  resultMask: number;
+}
+
+export interface OpcUaBrowseResponse {
+  references?: OpcUaReferenceLike[] | null;
+}
+
+export interface OpcUaReferenceLike {
+  nodeId?: unknown;
+  browseName?: unknown;
+  displayName?: { text?: string } | string;
+  nodeClass?: unknown;
+  dataType?: unknown;
 }
 
 export interface OpcUaClientLike {
@@ -12,8 +39,11 @@ export interface OpcUaClientLike {
   disconnect(): Promise<void>;
 }
 
-export type OpcUaUserIdentity =
-  | { type: 'UserName'; userName: string; password: string };
+export interface OpcUaUserIdentity {
+  type: 'UserName';
+  userName: string;
+  password: string;
+}
 
 export interface NodeOpcUaGatewayOptions {
   connection: AppConfig['connection'];
@@ -78,14 +108,19 @@ export class NodeOpcUaGateway implements OpcUaGateway {
     };
     this.clientFactory = options?.clientFactory ?? createNodeOpcUaClient;
     this.now = options?.now ?? (() => new Date());
-    this.initialReconnectDelayMs = options?.reconnect?.initialDelayMs ?? DEFAULT_INITIAL_RECONNECT_DELAY_MS;
+    this.initialReconnectDelayMs =
+      options?.reconnect?.initialDelayMs ?? DEFAULT_INITIAL_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options?.reconnect?.maxDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
     this.reconnectDelayMs = this.initialReconnectDelayMs;
   }
 
   status(): Promise<OpcUaStatus> {
-    const status: OpcUaStatus = { state: this.state, connectionGeneration: this.connectionGeneration };
-    if (this.lastSuccessfulHealthCheckAt !== undefined) status.lastSuccessfulHealthCheckAt = this.lastSuccessfulHealthCheckAt;
+    const status: OpcUaStatus = {
+      state: this.state,
+      connectionGeneration: this.connectionGeneration,
+    };
+    if (this.lastSuccessfulHealthCheckAt !== undefined)
+      status.lastSuccessfulHealthCheckAt = this.lastSuccessfulHealthCheckAt;
     if (this.lastError !== undefined) status.lastError = this.lastError;
     return Promise.resolve(status);
   }
@@ -110,10 +145,33 @@ export class NodeOpcUaGateway implements OpcUaGateway {
     this.state = 'disconnected';
   }
 
-  browse(nodeId: string, depth: number): Promise<BrowseNodeResult[]> {
-    void nodeId;
-    void depth;
-    return Promise.reject(new Error('OPC UA browse is not implemented yet.'));
+  async browse(nodeId: string, depth: number): Promise<BrowseNodeResult[]> {
+    const session = this.session;
+    if (session?.browse === undefined || this.state !== 'connected')
+      throw new Error('OPC UA session is not connected.');
+
+    const results: BrowseNodeResult[] = [];
+    let frontier = [nodeId];
+    const visited = new Set<string>([nodeId]);
+
+    for (let level = 0; level < depth && frontier.length > 0; level += 1) {
+      const nextFrontier: string[] = [];
+      for (const currentNodeId of frontier) {
+        const response = await session.browse(buildBrowseDescription(currentNodeId));
+        for (const reference of response.references ?? []) {
+          const childNodeId = stringifyOpcUaValue(reference.nodeId);
+          if (childNodeId === undefined) continue;
+          results.push(mapReference(reference, childNodeId));
+          if (!visited.has(childNodeId)) {
+            visited.add(childNodeId);
+            nextFrontier.push(childNodeId);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    return results;
   }
 
   read(nodeId: string): Promise<ReadValueResult> {
@@ -135,7 +193,10 @@ export class NodeOpcUaGateway implements OpcUaGateway {
   private async establishSession(): Promise<void> {
     if (this.closed) return;
     try {
-      this.client = this.clientFactory({ securityMode: this.connection.securityMode, securityPolicy: this.connection.securityPolicy });
+      this.client = this.clientFactory({
+        securityMode: this.connection.securityMode,
+        securityPolicy: this.connection.securityPolicy,
+      });
       await this.client.connect(this.connection.endpointUrl);
       this.session = await this.client.createSession(resolveUserIdentity(this.connection));
       this.state = 'connected';
@@ -173,6 +234,55 @@ export class NodeOpcUaGateway implements OpcUaGateway {
   }
 }
 
+function buildBrowseDescription(nodeId: string): OpcUaBrowseDescription {
+  return {
+    nodeId,
+    browseDirection: 'Forward',
+    referenceTypeId: 'HierarchicalReferences',
+    includeSubtypes: true,
+    resultMask: 63,
+  };
+}
+
+function mapReference(reference: OpcUaReferenceLike, nodeId: string): BrowseNodeResult {
+  const result: BrowseNodeResult = { nodeId };
+  const browseName = stringifyOpcUaValue(reference.browseName);
+  const displayName = stringifyDisplayName(reference.displayName);
+  const nodeClass = stringifyOpcUaValue(reference.nodeClass);
+  const dataType = stringifyOpcUaValue(reference.dataType);
+  if (browseName !== undefined) result.browseName = browseName;
+  if (displayName !== undefined) result.displayName = displayName;
+  if (nodeClass !== undefined) result.nodeClass = nodeClass;
+  if (dataType !== undefined) result.dataType = dataType;
+  return result;
+}
+
+function stringifyDisplayName(value: OpcUaReferenceLike['displayName']): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value?.text !== undefined) return value.text;
+  return undefined;
+}
+
+function stringifyOpcUaValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // OPC UA SDK identifier objects stringify to canonical NodeId/QualifiedName text.
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  if (hasCustomToString(value)) return value.toString();
+  return undefined;
+}
+
+function hasCustomToString(value: unknown): value is { toString: () => string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'toString' in value &&
+    typeof value.toString === 'function' &&
+    value.toString !== Object.prototype.toString
+  );
+}
+
 function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaClientLike {
   const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
   const client = nodeOpcUa.OPCUAClient.create({
@@ -180,7 +290,10 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
     connectionStrategy: { maxRetry: 0 },
     endpointMustExist: false,
     securityMode: nodeOpcUa.MessageSecurityMode[options.securityMode],
-    securityPolicy: options.securityPolicy === 'None' ? nodeOpcUa.SecurityPolicy['None'] : nodeOpcUa.SecurityPolicy[options.securityPolicy],
+    securityPolicy:
+      options.securityPolicy === 'None'
+        ? nodeOpcUa.SecurityPolicy['None']
+        : nodeOpcUa.SecurityPolicy[options.securityPolicy],
   });
 
   return {
@@ -190,7 +303,11 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
       client.createSession(
         userIdentity === undefined
           ? undefined
-          : { type: nodeOpcUa.UserTokenType.UserName, userName: userIdentity.userName, password: userIdentity.password },
+          : {
+              type: nodeOpcUa.UserTokenType.UserName,
+              userName: userIdentity.userName,
+              password: userIdentity.password,
+            },
       ),
   };
 }
@@ -213,6 +330,13 @@ function resolveEnvRef(ref: string): string {
 
 function sanitizeError(error: unknown, now: Date): NonNullable<OpcUaStatus['lastError']> {
   const message = error instanceof Error ? error.message : 'Unknown OPC UA connection error.';
-  const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'opcua_connection_failed';
-  return { code, message: message.split('\n')[0]?.slice(0, 500) ?? 'Unknown OPC UA connection error.', at: now.toISOString() };
+  const code =
+    error instanceof Error && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'opcua_connection_failed';
+  return {
+    code,
+    message: message.split('\n')[0]?.slice(0, 500) ?? 'Unknown OPC UA connection error.',
+    at: now.toISOString(),
+  };
 }

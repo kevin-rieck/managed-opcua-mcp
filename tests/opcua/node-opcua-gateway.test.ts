@@ -42,7 +42,11 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
         endpointUrl: 'opc.tcp://secure.example.invalid:4840',
         securityMode: 'Sign',
         securityPolicy: 'Basic256Sha256',
-        auth: { type: 'usernamePassword', username: '${OPCUA_USERNAME}', password: '${OPCUA_PASSWORD}' },
+        auth: {
+          type: 'usernamePassword',
+          username: '${OPCUA_USERNAME}',
+          password: '${OPCUA_PASSWORD}',
+        },
       },
       clientFactory,
     });
@@ -63,9 +67,54 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     vi.unstubAllEnvs();
   });
 
+  it('browses connected sessions through forward hierarchical references', async () => {
+    const session = {
+      close: () => Promise.resolve(),
+      browse: vi.fn(() =>
+        Promise.resolve({
+          references: [
+            {
+              nodeId: { toString: () => 'ns=2;s=Machine.Motor' },
+              browseName: { toString: () => '2:Motor' },
+              displayName: { text: 'Motor' },
+              nodeClass: { toString: () => 'Object' },
+              dataType: { toString: () => 'Double' },
+            },
+          ],
+        }),
+      ),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.browse('ns=2;s=Machine', 1)).resolves.toEqual([
+      {
+        nodeId: 'ns=2;s=Machine.Motor',
+        browseName: '2:Motor',
+        displayName: 'Motor',
+        nodeClass: 'Object',
+        dataType: 'Double',
+      },
+    ]);
+    expect(session.browse).toHaveBeenCalledWith({
+      nodeId: 'ns=2;s=Machine',
+      browseDirection: 'Forward',
+      referenceTypeId: 'HierarchicalReferences',
+      includeSubtypes: true,
+      resultMask: 63,
+    });
+  });
+
   it('reports sanitized connection failures, then reconnects with a new generation', async () => {
     vi.useFakeTimers();
-    const failedClient = rejectingClient(Object.assign(new Error('connect failed\nsecret stack'), { code: 'ECONNREFUSED' }));
+    const failedClient = rejectingClient(
+      Object.assign(new Error('connect failed\nsecret stack'), { code: 'ECONNREFUSED' }),
+    );
     const connectedClient = resolvedClient();
     const gateway = new NodeOpcUaGateway({
       connection: anonymousConnection,
@@ -83,7 +132,11 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     expect(await gateway.status()).toMatchObject({
       state: 'disconnected',
       connectionGeneration: 0,
-      lastError: { code: 'ECONNREFUSED', message: 'connect failed', at: '2026-07-05T00:00:01.000Z' },
+      lastError: {
+        code: 'ECONNREFUSED',
+        message: 'connect failed',
+        at: '2026-07-05T00:00:01.000Z',
+      },
     });
 
     await vi.advanceTimersByTimeAsync(100);
@@ -133,9 +186,11 @@ function pendingClient(): TestClient & { resolveConnect: () => Promise<void> } {
   };
 }
 
-function resolvedClient(): TestClient {
+function resolvedClient(
+  session: Awaited<ReturnType<TestClient['createSession']>> = { close: () => Promise.resolve() },
+): TestClient {
   const connect = vi.fn(() => Promise.resolve());
-  const createSession = vi.fn(() => Promise.resolve({ close: () => Promise.resolve() }));
+  const createSession = vi.fn(() => Promise.resolve(session));
   return {
     connect,
     connectMock: connect,
