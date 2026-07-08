@@ -1,4 +1,4 @@
-# OPC UA MCP Server
+# Managed OPC UA MCP Server
 
 This context describes an MCP adapter that lets agents inspect and operate an OPC UA server.
 

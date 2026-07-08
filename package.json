@@ -1,5 +1,5 @@
 {
-  "name": "opcua-mcp-server",
+  "name": "managed-opcua-mcp",
   "version": "0.1.0",
   "description": "MCP server for scoped OPC UA read access and operator-approved semantic controls.",
   "type": "module",

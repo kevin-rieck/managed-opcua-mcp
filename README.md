@@ -1,8 +1,8 @@
-# OPC UA MCP Server
+# Managed OPC UA MCP Server
 
 A TypeScript MCP server that exposes OPC UA read access through server-side authorization and Operator-defined Semantic Controls for safe agent interaction.
 
-See [`docs/plan.md`](./docs/plan.md) and [`CONTEXT.md`](./CONTEXT.md).
+See [`docs/plan.md`](./docs/plan.md), [`docs/operator-guide.md`](./docs/operator-guide.md), and [`CONTEXT.md`](./CONTEXT.md).
 
 ## Security posture
 
@@ -23,6 +23,8 @@ npm test
 ```
 
 ## Local use
+
+Read the [Operator safety guide](./docs/operator-guide.md) before enabling controls.
 
 Copy `examples/local.config.yaml` to a non-committed local config and edit it for your OPC UA server.
 
