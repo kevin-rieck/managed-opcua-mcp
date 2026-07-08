@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomUUID } from 'node:crypto';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import type { AppConfig } from '../config/schema.js';
@@ -25,7 +26,10 @@ export interface McpServerDependencies {
 
 export function createMcpServer(dependencies: McpServerDependencies): McpServer {
   const server = new McpServer({ name: 'opcua-mcp-server', version: '0.1.0' });
-  const writeState: WriteControlState = { lastWriteAtByControlName: new Map() };
+  const writeState: WriteControlState = {
+    lastWriteAtByControlName: new Map(),
+    confirmationTokens: new Map(),
+  };
 
   server.registerResource(
     'status',
@@ -75,6 +79,33 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
         annotations: { readOnlyHint: true, openWorldHint: false },
       },
       async () => toolJson(await listControlsTool(dependencies)),
+    );
+
+    server.registerTool(
+      'prepare_control',
+      {
+        title: 'Prepare medium-risk Semantic Control',
+        description: 'Prepare a medium-risk Semantic Control Operation and return a confirmation token.',
+        inputSchema: {
+          controlName: z.string().min(1),
+          value: z.unknown(),
+          reason: z.string().min(1),
+        },
+        annotations: { readOnlyHint: false, openWorldHint: false },
+      },
+      async ({ controlName, value, reason }) =>
+        toolJson(await prepareControlTool(dependencies, writeState, { controlName, value, reason })),
+    );
+
+    server.registerTool(
+      'commit_control',
+      {
+        title: 'Commit medium-risk Semantic Control',
+        description: 'Commit a prepared medium-risk Semantic Control Operation by token.',
+        inputSchema: { token: z.string().min(1) },
+        annotations: { readOnlyHint: false, openWorldHint: false },
+      },
+      async ({ token }) => toolJson(await commitControlTool(dependencies, writeState, { token })),
     );
 
     server.registerTool(
@@ -190,8 +221,24 @@ interface WriteControlArgs {
   reason?: string;
 }
 
+interface CommitControlArgs {
+  token: string;
+}
+
 interface WriteControlState {
   lastWriteAtByControlName: Map<string, number>;
+  confirmationTokens: Map<string, ConfirmationToken>;
+}
+
+interface ConfirmationToken {
+  controlName: string;
+  requestedValue: unknown;
+  rawRequestedValue: unknown;
+  reason: string;
+  configHash: string;
+  connectionGeneration: number;
+  expiresAt: number;
+  observedCurrentRawValue?: unknown;
 }
 
 interface ResolvedReadIdentifier {
@@ -260,6 +307,346 @@ async function listControlsTool(
         unavailableReasons,
       };
     }),
+  };
+}
+
+async function prepareControlTool(
+  dependencies: McpServerDependencies,
+  state: WriteControlState,
+  args: Required<WriteControlArgs>,
+): Promise<Record<string, unknown>> {
+  const control = dependencies.config.controls?.items.find(
+    (candidate) => candidate.name === args.controlName,
+  );
+  if (control === undefined) {
+    return {
+      ok: false,
+      code: 'unknown_control',
+      message: `Unknown Semantic Control: ${args.controlName}`,
+    };
+  }
+
+  if (dependencies.config.controls?.enabled !== true) {
+    return {
+      ok: false,
+      code: 'controls_disabled',
+      message: 'Semantic Controls are disabled.',
+    };
+  }
+
+  if (control.riskLevel !== 'medium') {
+    return {
+      ok: false,
+      code: 'confirmation_not_required',
+      message: 'Only medium-risk Semantic Controls use Control Confirmation.',
+    };
+  }
+
+  const auditPreflight = await requireHealthyAudit(dependencies.auditSink);
+  if (!auditPreflight.ok) return auditPreflight;
+
+  const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
+  if (!connectionPreflight.ok) return connectionPreflight.response;
+
+  const normalized = normalizeWriteControlValue(control, args.value);
+  if (!normalized.ok) {
+    const append = await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        event: 'control.prepare.rejected',
+        result: 'rejected',
+        controlName: control.name,
+        nodeId: control.nodeId,
+        riskLevel: control.riskLevel,
+        configHash: dependencies.configHash,
+        reason: args.reason,
+        errorMessage: normalized.message,
+      },
+    });
+    return {
+      ok: false,
+      code: 'invalid_control_value',
+      message: normalized.message,
+      controlName: control.name,
+      auditId: append.id,
+    };
+  }
+
+  const currentValue = await readCurrentControlValue(dependencies.gateway, control);
+  if (!currentValue.ok && control.requireCurrentValueForConfirmation === true) {
+    const append = await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        event: 'control.prepare.rejected',
+        result: 'rejected',
+        controlName: control.name,
+        nodeId: control.nodeId,
+        requestedValue: normalized.value,
+        rawRequestedValue: normalized.rawValue,
+        riskLevel: control.riskLevel,
+        configHash: dependencies.configHash,
+        reason: args.reason,
+        errorMessage: currentValue.message ?? 'Current value unavailable.',
+      },
+    });
+    return { ...currentValue, controlName: control.name, auditId: append.id };
+  }
+
+  const token = randomUUID();
+  const expiresAtMs = Date.now() + dependencies.config.controls.defaults.mediumConfirmationTtlMs;
+  state.confirmationTokens.set(token, {
+    controlName: control.name,
+    requestedValue: normalized.value,
+    rawRequestedValue: normalized.rawValue,
+    reason: args.reason,
+    configHash: dependencies.configHash,
+    connectionGeneration: connectionPreflight.connection.connectionGeneration,
+    expiresAt: expiresAtMs,
+    ...(currentValue.ok && currentValue.rawValue !== undefined
+      ? { observedCurrentRawValue: currentValue.rawValue }
+      : {}),
+  });
+
+  const append = await appendControlAuditRecord(dependencies.auditSink, {
+    maxReasonLength: dependencies.config.audit.maxReasonLength,
+    record: {
+      event: 'control.prepare.completed',
+      result: 'prepared',
+      controlName: control.name,
+      nodeId: control.nodeId,
+      requestedValue: normalized.value,
+      rawRequestedValue: normalized.rawValue,
+      riskLevel: control.riskLevel,
+      configHash: dependencies.configHash,
+      reason: args.reason,
+    },
+  });
+
+  return {
+    ok: true,
+    token,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    auditId: append.id,
+    controlName: control.name,
+    nodeId: control.nodeId,
+    description: control.description,
+    requestedValue: normalized.value,
+    rawRequestedValue: normalized.rawValue,
+    riskLevel: control.riskLevel,
+    riskNote: control.riskNote,
+    currentValue,
+    commitAvailable: true,
+  };
+}
+
+async function readCurrentControlValue(
+  gateway: OpcUaGateway,
+  control: ControlItem,
+): Promise<Record<string, unknown> & { ok: boolean; rawValue?: unknown; message?: string }> {
+  try {
+    const read = await gateway.read(control.nodeId);
+    const normalized = normalizeReadValue(control, read.value);
+    return {
+      ok: true,
+      value: normalized.value,
+      ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
+      ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
+    };
+  } catch (error) {
+    return { ok: false, ...sanitizeToolError(error, 'opcua_read_failed') };
+  }
+}
+
+async function commitControlTool(
+  dependencies: McpServerDependencies,
+  state: WriteControlState,
+  args: CommitControlArgs,
+): Promise<Record<string, unknown>> {
+  const token = state.confirmationTokens.get(args.token);
+  // Confirmation tokens are opaque random UUIDs, not secrets compared in constant-time contexts.
+  // eslint-disable-next-line security/detect-possible-timing-attacks
+  if (token === undefined) {
+    const append = await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        event: 'control.commit.rejected',
+        result: 'rejected',
+        configHash: dependencies.configHash,
+        errorMessage: 'Invalid confirmation token.',
+      },
+    });
+    return {
+      ok: false,
+      code: 'invalid_confirmation_token',
+      message: 'Invalid confirmation token.',
+      auditId: append.id,
+    };
+  }
+
+  const control = dependencies.config.controls?.items.find(
+    (candidate) => candidate.name === token.controlName,
+  );
+  if (control === undefined) {
+    state.confirmationTokens.delete(args.token);
+    return { ok: false, code: 'unknown_control', message: `Unknown Semantic Control: ${token.controlName}` };
+  }
+
+  if (dependencies.config.controls?.enabled !== true) {
+    return { ok: false, code: 'controls_disabled', message: 'Semantic Controls are disabled.' };
+  }
+
+  if (Date.now() > token.expiresAt) {
+    state.confirmationTokens.delete(args.token);
+    const append = await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        event: 'control.commit.rejected',
+        result: 'rejected',
+        controlName: control.name,
+        nodeId: control.nodeId,
+        requestedValue: token.requestedValue,
+        rawRequestedValue: token.rawRequestedValue,
+        riskLevel: control.riskLevel,
+        configHash: dependencies.configHash,
+        reason: token.reason,
+        errorMessage: 'Confirmation token expired.',
+      },
+    });
+    return {
+      ok: false,
+      code: 'confirmation_token_expired',
+      message: 'Confirmation token expired.',
+      auditId: append.id,
+    };
+  }
+
+  const auditPreflight = await requireHealthyAudit(dependencies.auditSink);
+  if (!auditPreflight.ok) return auditPreflight;
+
+  const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
+  if (!connectionPreflight.ok) return connectionPreflight.response;
+  if (connectionPreflight.connection.connectionGeneration !== token.connectionGeneration) {
+    state.confirmationTokens.delete(args.token);
+    await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        event: 'control.commit.rejected',
+        result: 'rejected',
+        controlName: control.name,
+        nodeId: control.nodeId,
+        requestedValue: token.requestedValue,
+        rawRequestedValue: token.rawRequestedValue,
+        riskLevel: control.riskLevel,
+        configHash: dependencies.configHash,
+        reason: token.reason,
+        errorMessage: 'Connection changed after prepare.',
+      },
+    });
+    return {
+      ok: false,
+      code: 'confirmation_token_connection_changed',
+      message: 'OPC UA connection changed after prepare.',
+    };
+  }
+
+  const cooldownMs = control.cooldownMs ?? dependencies.config.controls.defaults.cooldownMs;
+  const lastWriteAt = state.lastWriteAtByControlName.get(control.name);
+  if (lastWriteAt !== undefined) {
+    const remainingCooldownMs = cooldownMs - (Date.now() - lastWriteAt);
+    if (remainingCooldownMs > 0) {
+      return {
+        ok: false,
+        code: 'control_cooldown_active',
+        message: 'Semantic Control cooldown is active.',
+        controlName: control.name,
+        cooldownMs,
+        remainingCooldownMs,
+      };
+    }
+  }
+
+  const auditBase = {
+    controlName: control.name,
+    nodeId: control.nodeId,
+    requestedValue: token.requestedValue,
+    rawRequestedValue: token.rawRequestedValue,
+    riskLevel: control.riskLevel,
+    configHash: dependencies.configHash,
+    reason: token.reason,
+  };
+
+  if (token.observedCurrentRawValue !== undefined) {
+    const currentValue = await readCurrentControlValue(dependencies.gateway, control);
+    if (!currentValue.ok || currentValue.rawValue !== token.observedCurrentRawValue) {
+      const append = await appendControlAuditRecord(dependencies.auditSink, {
+        maxReasonLength: dependencies.config.audit.maxReasonLength,
+        record: {
+          ...auditBase,
+          event: 'control.commit.rejected',
+          result: 'rejected',
+          errorMessage: currentValue.ok
+            ? 'Current value changed after prepare.'
+            : (currentValue.message ?? 'Current value unavailable.'),
+        },
+      });
+      return {
+        ok: false,
+        code: currentValue.ok ? 'confirmation_current_value_changed' : 'opcua_read_failed',
+        message: currentValue.ok
+          ? 'Current value changed after prepare.'
+          : (currentValue.message ?? 'Current value unavailable.'),
+        controlName: control.name,
+        currentValue,
+        auditId: append.id,
+      };
+    }
+  }
+
+  await appendControlAuditRecord(dependencies.auditSink, {
+    maxReasonLength: dependencies.config.audit.maxReasonLength,
+    record: { ...auditBase, event: 'control.commit.requested', result: 'accepted' },
+  });
+
+  let write;
+  try {
+    write = await dependencies.gateway.write(control.nodeId, control.dataType, token.rawRequestedValue);
+  } catch (error) {
+    const sanitized = sanitizeToolError(error, 'opcua_write_failed');
+    await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        ...auditBase,
+        event: 'control.commit.failed',
+        result: 'failed',
+        errorMessage: sanitized.message,
+      },
+    });
+    return { ok: false, ...sanitized, controlName: control.name, nodeId: control.nodeId };
+  }
+
+  const verification = await verifyControlWrite(dependencies.gateway, control, token.rawRequestedValue);
+  await appendControlAuditRecord(dependencies.auditSink, {
+    maxReasonLength: dependencies.config.audit.maxReasonLength,
+    record: {
+      ...auditBase,
+      event: 'control.commit.completed',
+      result: verification.ok ? 'succeeded' : 'verification_failed',
+      opcuaStatus: write.opcuaStatus,
+    },
+  });
+  state.confirmationTokens.delete(args.token);
+  state.lastWriteAtByControlName.set(control.name, Date.now());
+
+  return {
+    ok: verification.ok,
+    ...(verification.ok ? {} : { code: 'write_accepted_verification_failed' }),
+    controlName: control.name,
+    nodeId: control.nodeId,
+    requestedValue: token.requestedValue,
+    rawRequestedValue: token.rawRequestedValue,
+    riskLevel: control.riskLevel,
+    opcuaStatus: write.opcuaStatus,
+    verification,
   };
 }
 
