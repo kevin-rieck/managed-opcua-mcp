@@ -292,8 +292,8 @@ function mapReference(reference: OpcUaReferenceLike, nodeId: string): BrowseNode
   const result: BrowseNodeResult = { nodeId };
   const browseName = stringifyOpcUaValue(reference.browseName);
   const displayName = stringifyDisplayName(reference.displayName);
-  const nodeClass = stringifyOpcUaValue(reference.nodeClass);
-  const dataType = stringifyOpcUaValue(reference.dataType);
+  const nodeClass = stringifyNodeClass(reference.nodeClass);
+  const dataType = stringifyDataType(reference.dataType);
   if (browseName !== undefined) result.browseName = browseName;
   if (displayName !== undefined) result.displayName = displayName;
   if (nodeClass !== undefined) result.nodeClass = nodeClass;
@@ -303,8 +303,8 @@ function mapReference(reference: OpcUaReferenceLike, nodeId: string): BrowseNode
 
 function mapDataValue(nodeId: string, dataValue: OpcUaDataValueLike): ReadValueResult {
   const result: ReadValueResult = { nodeId, value: dataValue.value?.value };
-  const dataType = stringifyOpcUaValue(dataValue.value?.dataType);
-  const opcuaStatus = stringifyOpcUaValue(dataValue.statusCode);
+  const dataType = stringifyDataType(dataValue.value?.dataType);
+  const opcuaStatus = stringifyStatusCode(dataValue.statusCode);
   const sourceTimestamp = stringifyTimestamp(dataValue.sourceTimestamp);
   const serverTimestamp = stringifyTimestamp(dataValue.serverTimestamp);
   if (dataType !== undefined) result.dataType = dataType;
@@ -334,6 +334,29 @@ function stringifyOpcUaValue(value: unknown): string | undefined {
   // eslint-disable-next-line @typescript-eslint/no-base-to-string
   if (hasCustomToString(value)) return value.toString();
   return undefined;
+}
+
+function stringifyDataType(value: unknown): string | undefined {
+  if (typeof value === 'number') {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    return (require('node-opcua') as any).DataType[value] ?? String(value);
+  }
+  return stringifyOpcUaValue(value);
+}
+
+function stringifyNodeClass(value: unknown): string | undefined {
+  if (typeof value === 'number') {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    return (require('node-opcua') as any).NodeClass[value] ?? String(value);
+  }
+  return stringifyOpcUaValue(value);
+}
+
+function stringifyStatusCode(value: unknown): string | undefined {
+  if (typeof value === 'object' && value !== null && 'name' in value && typeof (value as any).name === 'string') {
+    return (value as any).name;
+  }
+  return stringifyOpcUaValue(value);
 }
 
 function hasCustomToString(value: unknown): value is { toString: () => string } {

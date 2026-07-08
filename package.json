@@ -21,6 +21,7 @@
     "build": "tsc -p tsconfig.build.json",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('coverage',{recursive:true,force:true})\"",
     "dev": "tsx src/cli/index.ts",
+    "dev:serve": "tsx src/cli/index.ts serve --config opcua-mcp.local.yaml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

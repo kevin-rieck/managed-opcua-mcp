@@ -77,8 +77,8 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
               nodeId: { toString: () => 'ns=2;s=Machine.Motor' },
               browseName: { toString: () => '2:Motor' },
               displayName: { text: 'Motor' },
-              nodeClass: { toString: () => 'Object' },
-              dataType: { toString: () => 'Double' },
+              nodeClass: 1, // NodeClass.Object
+              dataType: 11, // DataType.Double
             },
           ],
         }),
@@ -115,8 +115,8 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       close: () => Promise.resolve(),
       read: vi.fn(() =>
         Promise.resolve({
-          value: { dataType: { toString: () => 'Double' }, value: 72.5 },
-          statusCode: { toString: () => 'Good' },
+          value: { dataType: 11 /* Double */, value: 72.5 },
+          statusCode: { value: 0, name: 'Good' }, // node-opcua StatusCode is an object, but sometimes represented by its enum number or an object with name
           sourceTimestamp: new Date('2026-07-07T10:00:00.000Z'),
           serverTimestamp: new Date('2026-07-07T10:00:01.000Z'),
         }),
