@@ -3,7 +3,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import type { AppConfig } from '../config/schema.js';
 import type { AuditSink } from '../audit/audit-sink.js';
+import { appendControlAuditRecord, requireHealthyAudit } from '../audit/control-audit.js';
 import type { ControlItem } from '../config/schema.js';
+import { normalizeControlValue } from '../control/value-normalization.js';
 import { getReadEntryPoints, resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
 import { requireConnectedOpcUa } from './live-opcua-preflight.js';
 import type { BrowseNodeResult, OpcUaGateway, ReadValueResult } from '../opcua/gateway.js';
@@ -23,6 +25,7 @@ export interface McpServerDependencies {
 
 export function createMcpServer(dependencies: McpServerDependencies): McpServer {
   const server = new McpServer({ name: 'opcua-mcp-server', version: '0.1.0' });
+  const writeState: WriteControlState = { lastWriteAtByControlName: new Map() };
 
   server.registerResource(
     'status',
@@ -72,6 +75,25 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
         annotations: { readOnlyHint: true, openWorldHint: false },
       },
       async () => toolJson(await listControlsTool(dependencies)),
+    );
+
+    server.registerTool(
+      'write_control',
+      {
+        title: 'Write low-risk Semantic Control',
+        description: 'Perform a low-risk Operator-defined Semantic Control Operation.',
+        inputSchema: {
+          controlName: z.string().min(1),
+          value: z.unknown(),
+          reason: z.string().optional(),
+        },
+        annotations: { readOnlyHint: false, openWorldHint: false },
+      },
+      async ({ controlName, value, reason }) => {
+        const args: WriteControlArgs = { controlName, value };
+        if (reason !== undefined) args.reason = reason;
+        return toolJson(await writeControlTool(dependencies, writeState, args));
+      },
     );
   }
 
@@ -162,6 +184,16 @@ interface ReadNodesArgs {
   identifiers: ReadNodeIdentifier[];
 }
 
+interface WriteControlArgs {
+  controlName: string;
+  value: unknown;
+  reason?: string;
+}
+
+interface WriteControlState {
+  lastWriteAtByControlName: Map<string, number>;
+}
+
 interface ResolvedReadIdentifier {
   nodeId: string;
   label?: string;
@@ -229,6 +261,164 @@ async function listControlsTool(
       };
     }),
   };
+}
+
+async function writeControlTool(
+  dependencies: McpServerDependencies,
+  state: WriteControlState,
+  args: WriteControlArgs,
+): Promise<Record<string, unknown>> {
+  const control = dependencies.config.controls?.items.find(
+    (candidate) => candidate.name === args.controlName,
+  );
+  if (control === undefined) {
+    return {
+      ok: false,
+      code: 'unknown_control',
+      message: `Unknown Semantic Control: ${args.controlName}`,
+    };
+  }
+
+  if (dependencies.config.controls?.enabled !== true) {
+    return {
+      ok: false,
+      code: 'controls_disabled',
+      message: 'Semantic Controls are disabled.',
+    };
+  }
+
+  if (control.riskLevel === 'medium') {
+    return {
+      ok: false,
+      code: 'confirmation_required',
+      message: 'Medium-risk Semantic Controls require prepare_control and commit_control.',
+    };
+  }
+
+  const cooldownMs = control.cooldownMs ?? dependencies.config.controls.defaults.cooldownMs;
+  const lastWriteAt = state.lastWriteAtByControlName.get(control.name);
+  if (lastWriteAt !== undefined) {
+    const remainingCooldownMs = cooldownMs - (Date.now() - lastWriteAt);
+    if (remainingCooldownMs > 0) {
+      return {
+        ok: false,
+        code: 'control_cooldown_active',
+        message: 'Semantic Control cooldown is active.',
+        controlName: control.name,
+        cooldownMs,
+        remainingCooldownMs,
+      };
+    }
+  }
+
+  const auditPreflight = await requireHealthyAudit(dependencies.auditSink);
+  if (!auditPreflight.ok) return auditPreflight;
+
+  const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
+  if (!connectionPreflight.ok) return connectionPreflight.response;
+
+  const normalized = normalizeWriteControlValue(control, args.value);
+  if (!normalized.ok) {
+    return {
+      ok: false,
+      code: 'invalid_control_value',
+      message: normalized.message,
+      controlName: control.name,
+    };
+  }
+
+  const auditBase = {
+    controlName: control.name,
+    nodeId: control.nodeId,
+    requestedValue: normalized.value,
+    rawRequestedValue: normalized.rawValue,
+    riskLevel: control.riskLevel,
+    configHash: dependencies.configHash,
+    ...(args.reason !== undefined ? { reason: args.reason } : {}),
+  };
+
+  await appendControlAuditRecord(dependencies.auditSink, {
+    maxReasonLength: dependencies.config.audit.maxReasonLength,
+    record: { ...auditBase, event: 'control.write.requested', result: 'accepted' },
+  });
+
+  let write;
+  try {
+    write = await dependencies.gateway.write(control.nodeId, control.dataType, normalized.rawValue);
+  } catch (error) {
+    const sanitized = sanitizeToolError(error, 'opcua_write_failed');
+    await appendControlAuditRecord(dependencies.auditSink, {
+      maxReasonLength: dependencies.config.audit.maxReasonLength,
+      record: {
+        ...auditBase,
+        event: 'control.write.failed',
+        result: 'failed',
+        errorMessage: sanitized.message,
+      },
+    });
+    return {
+      ok: false,
+      ...sanitized,
+      controlName: control.name,
+      nodeId: control.nodeId,
+    };
+  }
+
+  const verification = await verifyControlWrite(dependencies.gateway, control, normalized.rawValue);
+
+  await appendControlAuditRecord(dependencies.auditSink, {
+    maxReasonLength: dependencies.config.audit.maxReasonLength,
+    record: {
+      ...auditBase,
+      event: 'control.write.completed',
+      result: verification.ok ? 'succeeded' : 'verification_failed',
+      opcuaStatus: write.opcuaStatus,
+    },
+  });
+  state.lastWriteAtByControlName.set(control.name, Date.now());
+
+  return {
+    ok: verification.ok,
+    ...(verification.ok ? {} : { code: 'write_accepted_verification_failed' }),
+    controlName: control.name,
+    nodeId: control.nodeId,
+    requestedValue: normalized.value,
+    rawRequestedValue: normalized.rawValue,
+    riskLevel: control.riskLevel,
+    opcuaStatus: write.opcuaStatus,
+    verification,
+  };
+}
+
+async function verifyControlWrite(
+  gateway: OpcUaGateway,
+  control: ControlItem,
+  rawRequestedValue: unknown,
+): Promise<Record<string, unknown> & { ok: boolean }> {
+  const read = await gateway.read(control.nodeId);
+  const normalized = normalizeReadValue(control, read.value);
+  return {
+    ok: read.value === rawRequestedValue,
+    value: normalized.value,
+    ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
+    ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
+  };
+}
+
+function normalizeWriteControlValue(
+  control: ControlItem,
+  value: unknown,
+):
+  | { ok: true; value: unknown; rawValue: unknown }
+  | { ok: false; message: string } {
+  try {
+    return { ok: true, ...normalizeControlValue(control, value) };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? sanitizeToolMessage(error.message) : 'Invalid control value.',
+    };
+  }
 }
 
 function buildControlValueMetadata(control: ControlItem): Record<string, unknown> {
@@ -501,7 +691,11 @@ function sanitizeToolError(error: unknown, defaultCode: string): { code: string;
     error instanceof Error && 'code' in error && typeof error.code === 'string'
       ? error.code
       : defaultCode;
-  return { code, message: message.split('\n')[0]?.slice(0, 500) ?? 'OPC UA browse failed.' };
+  return { code, message: sanitizeToolMessage(message) };
+}
+
+function sanitizeToolMessage(message: string): string {
+  return message.split('\n')[0]?.slice(0, 500) ?? 'OPC UA operation failed.';
 }
 
 function sanitizeBrowseResults(results: BrowseNodeResult[]): BrowseNodeResult[] {
