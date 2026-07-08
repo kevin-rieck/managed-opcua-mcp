@@ -9,6 +9,12 @@ import type { ControlItem } from '../config/schema.js';
 import { normalizeControlValue } from '../control/value-normalization.js';
 import { getReadEntryPoints, resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
 import { requireConnectedOpcUa } from './live-opcua-preflight.js';
+import {
+  getOnlineValidation,
+  validationReasonsForControl,
+  type OnlineValidationCache,
+  type OnlineValidationResult,
+} from './online-validation.js';
 import type { BrowseNodeResult, OpcUaGateway, ReadValueResult } from '../opcua/gateway.js';
 import {
   buildConfigSummaryResource,
@@ -30,6 +36,7 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
     lastWriteAtByControlName: new Map(),
     confirmationTokens: new Map(),
   };
+  const onlineValidationCache: OnlineValidationCache = {};
 
   server.registerResource(
     'status',
@@ -39,7 +46,15 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       description: 'Safe operational status for the MCP Server and OPC UA connection.',
       mimeType: 'application/json',
     },
-    async () => jsonResource('opcua://status', await buildStatusResource(dependencies)),
+    async () => {
+      const status = await buildStatusResource(dependencies);
+      status['onlineValidation'] = await getOnlineValidation(
+        dependencies.config,
+        dependencies.gateway,
+        onlineValidationCache,
+      );
+      return jsonResource('opcua://status', status);
+    },
   );
 
   server.registerResource(
@@ -78,7 +93,7 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
         inputSchema: {},
         annotations: { readOnlyHint: true, openWorldHint: false },
       },
-      async () => toolJson(await listControlsTool(dependencies)),
+      async () => toolJson(await listControlsTool(dependencies, onlineValidationCache)),
     );
 
     server.registerTool(
@@ -94,7 +109,13 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
         annotations: { readOnlyHint: false, openWorldHint: false },
       },
       async ({ controlName, value, reason }) =>
-        toolJson(await prepareControlTool(dependencies, writeState, { controlName, value, reason })),
+        toolJson(
+          await prepareControlTool(dependencies, writeState, onlineValidationCache, {
+            controlName,
+            value,
+            reason,
+          }),
+        ),
     );
 
     server.registerTool(
@@ -105,7 +126,8 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
         inputSchema: { token: z.string().min(1) },
         annotations: { readOnlyHint: false, openWorldHint: false },
       },
-      async ({ token }) => toolJson(await commitControlTool(dependencies, writeState, { token })),
+      async ({ token }) =>
+        toolJson(await commitControlTool(dependencies, writeState, onlineValidationCache, { token })),
     );
 
     server.registerTool(
@@ -123,7 +145,7 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       async ({ controlName, value, reason }) => {
         const args: WriteControlArgs = { controlName, value };
         if (reason !== undefined) args.reason = reason;
-        return toolJson(await writeControlTool(dependencies, writeState, args));
+        return toolJson(await writeControlTool(dependencies, writeState, onlineValidationCache, args));
       },
     );
   }
@@ -257,12 +279,18 @@ type ReadResolution = ResolvedReadIdentifier | ReadResolutionError;
 
 async function listControlsTool(
   dependencies: McpServerDependencies,
+  onlineValidationCache: OnlineValidationCache,
 ): Promise<Record<string, unknown>> {
   const controls = dependencies.config.controls?.items ?? [];
   const defaultCooldownMs = dependencies.config.controls?.defaults.cooldownMs ?? 0;
   const controlsEnabled = dependencies.config.controls?.enabled ?? false;
   const status = await dependencies.gateway.status();
   const auditHealth = await dependencies.auditSink.health();
+  const onlineValidation = await getOnlineValidation(
+    dependencies.config,
+    dependencies.gateway,
+    onlineValidationCache,
+  );
   return {
     ok: true,
     controls: controls.map((control) => {
@@ -289,6 +317,8 @@ async function listControlsTool(
           message: `Audit logging is unavailable: ${auditHealth.reason}`,
         });
       }
+      const onlineValidationReasons = validationReasonsForControl(onlineValidation, control.name);
+      unavailableReasons.push(...onlineValidationReasons);
       return {
         name: control.name,
         ...(control.group !== undefined ? { group: control.group } : {}),
@@ -305,6 +335,9 @@ async function listControlsTool(
         cooldownMs: control.cooldownMs ?? defaultCooldownMs,
         available: unavailableReasons.length === 0,
         unavailableReasons,
+        ...(onlineValidationReasons.length > 0
+          ? { onlineValidation: { state: 'invalid', reasons: onlineValidationReasons } }
+          : {}),
       };
     }),
   };
@@ -313,6 +346,7 @@ async function listControlsTool(
 async function prepareControlTool(
   dependencies: McpServerDependencies,
   state: WriteControlState,
+  onlineValidationCache: OnlineValidationCache,
   args: Required<WriteControlArgs>,
 ): Promise<Record<string, unknown>> {
   const control = dependencies.config.controls?.items.find(
@@ -347,6 +381,13 @@ async function prepareControlTool(
 
   const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
   if (!connectionPreflight.ok) return connectionPreflight.response;
+
+  const onlinePreflight = await requireOnlineValidControl(
+    dependencies,
+    onlineValidationCache,
+    control.name,
+  );
+  if (!onlinePreflight.ok) return onlinePreflight.response;
 
   const normalized = normalizeWriteControlValue(control, args.value);
   if (!normalized.ok) {
@@ -460,6 +501,7 @@ async function readCurrentControlValue(
 async function commitControlTool(
   dependencies: McpServerDependencies,
   state: WriteControlState,
+  onlineValidationCache: OnlineValidationCache,
   args: CommitControlArgs,
 ): Promise<Record<string, unknown>> {
   const token = state.confirmationTokens.get(args.token);
@@ -525,6 +567,14 @@ async function commitControlTool(
 
   const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
   if (!connectionPreflight.ok) return connectionPreflight.response;
+
+  const onlinePreflight = await requireOnlineValidControl(
+    dependencies,
+    onlineValidationCache,
+    control.name,
+  );
+  if (!onlinePreflight.ok) return onlinePreflight.response;
+
   if (connectionPreflight.connection.connectionGeneration !== token.connectionGeneration) {
     state.confirmationTokens.delete(args.token);
     await appendControlAuditRecord(dependencies.auditSink, {
@@ -653,6 +703,7 @@ async function commitControlTool(
 async function writeControlTool(
   dependencies: McpServerDependencies,
   state: WriteControlState,
+  onlineValidationCache: OnlineValidationCache,
   args: WriteControlArgs,
 ): Promise<Record<string, unknown>> {
   const control = dependencies.config.controls?.items.find(
@@ -703,6 +754,13 @@ async function writeControlTool(
 
   const connectionPreflight = await requireConnectedOpcUa(dependencies.gateway);
   if (!connectionPreflight.ok) return connectionPreflight.response;
+
+  const onlinePreflight = await requireOnlineValidControl(
+    dependencies,
+    onlineValidationCache,
+    control.name,
+  );
+  if (!onlinePreflight.ok) return onlinePreflight.response;
 
   const normalized = normalizeWriteControlValue(control, args.value);
   if (!normalized.ok) {
@@ -774,6 +832,30 @@ async function writeControlTool(
     riskLevel: control.riskLevel,
     opcuaStatus: write.opcuaStatus,
     verification,
+  };
+}
+
+async function requireOnlineValidControl(
+  dependencies: McpServerDependencies,
+  onlineValidationCache: OnlineValidationCache,
+  controlName: string,
+): Promise<{ ok: true; validation: OnlineValidationResult } | { ok: false; response: Record<string, unknown> }> {
+  const validation = await getOnlineValidation(
+    dependencies.config,
+    dependencies.gateway,
+    onlineValidationCache,
+  );
+  const reasons = validationReasonsForControl(validation, controlName);
+  if (validation.state === 'pending' || reasons.length === 0) return { ok: true, validation };
+  return {
+    ok: false,
+    response: {
+      ok: false,
+      code: 'online_validation_failed',
+      message: 'Semantic Control is unavailable because online validation failed.',
+      controlName,
+      onlineValidation: { state: 'invalid', reasons },
+    },
   };
 }
 

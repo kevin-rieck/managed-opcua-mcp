@@ -36,6 +36,14 @@ export interface WriteValueResult {
   opcuaStatus: string;
 }
 
+export interface NodeMetadataResult {
+  exists?: boolean;
+  browseable?: boolean;
+  readable?: boolean;
+  writable?: boolean;
+  dataType?: string;
+}
+
 export interface OpcUaGateway {
   status(): Promise<OpcUaStatus>;
   connect(): Promise<void>;
@@ -44,4 +52,5 @@ export interface OpcUaGateway {
   read(nodeId: string): Promise<ReadValueResult>;
   readMany(nodeIds: string[]): Promise<ReadValueResult[]>;
   write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult>;
+  getNodeMetadata?(nodeId: string): Promise<NodeMetadataResult>;
 }

@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import type { AppConfig } from '../config/schema.js';
 import type {
   BrowseNodeResult,
+  NodeMetadataResult,
   OpcUaGateway,
   OpcUaStatus,
   ReadValueResult,
@@ -205,6 +206,19 @@ export class NodeOpcUaGateway implements OpcUaGateway {
     void dataType;
     void value;
     return Promise.reject(new Error('OPC UA write is not implemented yet.'));
+  }
+
+  async getNodeMetadata(nodeId: string): Promise<NodeMetadataResult> {
+    const [browse, read] = await Promise.allSettled([this.browse(nodeId, 1), this.read(nodeId)]);
+    const metadata: NodeMetadataResult = {
+      exists: browse.status === 'fulfilled' || read.status === 'fulfilled',
+      browseable: browse.status === 'fulfilled',
+      readable: read.status === 'fulfilled',
+    };
+    if (read.status === 'fulfilled' && read.value.dataType !== undefined) {
+      metadata.dataType = read.value.dataType;
+    }
+    return metadata;
   }
 
   private async establishSession(): Promise<void> {
