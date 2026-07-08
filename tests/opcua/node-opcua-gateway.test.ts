@@ -144,6 +144,29 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     });
   });
 
+  it('writes values through connected sessions', async () => {
+    const session = {
+      close: () => Promise.resolve(),
+      write: vi.fn(() => Promise.resolve({ toString: () => 'Good' })),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.write('ns=2;s=Machine.Enabled', 'Boolean', true)).resolves.toEqual({
+      opcuaStatus: 'Good',
+    });
+    expect(session.write).toHaveBeenCalledWith({
+      nodeId: 'ns=2;s=Machine.Enabled',
+      attributeId: 13,
+      value: { value: { dataType: 'Boolean', value: true } },
+    });
+  });
+
   it('reports sanitized connection failures, then reconnects with a new generation', async () => {
     vi.useFakeTimers();
     const failedClient = rejectingClient(

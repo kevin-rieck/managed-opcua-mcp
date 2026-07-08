@@ -13,11 +13,18 @@ export interface OpcUaSessionLike {
   close(): Promise<void>;
   browse?(description: OpcUaBrowseDescription): Promise<OpcUaBrowseResponse>;
   read?(description: OpcUaReadDescription): Promise<OpcUaDataValueLike>;
+  write?(description: OpcUaWriteDescription): Promise<unknown>;
 }
 
 export interface OpcUaReadDescription {
   nodeId: string;
   attributeId: 13;
+}
+
+export interface OpcUaWriteDescription {
+  nodeId: string;
+  attributeId: 13;
+  value: { value: { dataType: string; value: unknown } };
 }
 
 export interface OpcUaDataValueLike {
@@ -201,11 +208,17 @@ export class NodeOpcUaGateway implements OpcUaGateway {
     return Promise.all(nodeIds.map((nodeId) => this.read(nodeId)));
   }
 
-  write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult> {
-    void nodeId;
-    void dataType;
-    void value;
-    return Promise.reject(new Error('OPC UA write is not implemented yet.'));
+  async write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult> {
+    const session = this.session;
+    if (session?.write === undefined || this.state !== 'connected')
+      throw new Error('OPC UA session is not connected.');
+
+    const statusCode = await session.write({
+      nodeId,
+      attributeId: 13,
+      value: { value: { dataType, value } },
+    });
+    return { opcuaStatus: stringifyOpcUaValue(statusCode) ?? 'Unknown' };
   }
 
   async getNodeMetadata(nodeId: string): Promise<NodeMetadataResult> {
