@@ -84,6 +84,17 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       jsonResource('opcua://read-entry-points', buildReadEntryPointsResource(dependencies.config)),
   );
 
+  server.registerResource(
+    'read_scope',
+    'opcua://read-scope',
+    {
+      title: 'OPC UA MCP Server read scope',
+      description: 'Compatibility alias for configured Read Entry Points.',
+      mimeType: 'application/json',
+    },
+    () => jsonResource('opcua://read-scope', buildReadEntryPointsResource(dependencies.config)),
+  );
+
   if ((dependencies.config.controls?.items.length ?? 0) > 0) {
     server.registerTool(
       'list_controls',
@@ -680,7 +691,7 @@ async function commitControlTool(
     record: {
       ...auditBase,
       event: 'control.commit.completed',
-      result: verification.ok ? 'succeeded' : 'verification_failed',
+      result: writeCompletionAuditResult(verification),
       opcuaStatus: write.opcuaStatus,
     },
   });
@@ -689,7 +700,7 @@ async function commitControlTool(
 
   return {
     ok: verification.ok,
-    ...(verification.ok ? {} : { code: 'write_accepted_verification_failed' }),
+    ...(verification.ok ? {} : { code: writeCompletionResponseCode(verification) }),
     controlName: control.name,
     nodeId: control.nodeId,
     requestedValue: token.requestedValue,
@@ -816,7 +827,7 @@ async function writeControlTool(
     record: {
       ...auditBase,
       event: 'control.write.completed',
-      result: verification.ok ? 'succeeded' : 'verification_failed',
+      result: writeCompletionAuditResult(verification),
       opcuaStatus: write.opcuaStatus,
     },
   });
@@ -824,7 +835,7 @@ async function writeControlTool(
 
   return {
     ok: verification.ok,
-    ...(verification.ok ? {} : { code: 'write_accepted_verification_failed' }),
+    ...(verification.ok ? {} : { code: writeCompletionResponseCode(verification) }),
     controlName: control.name,
     nodeId: control.nodeId,
     requestedValue: normalized.value,
@@ -864,14 +875,30 @@ async function verifyControlWrite(
   control: ControlItem,
   rawRequestedValue: unknown,
 ): Promise<Record<string, unknown> & { ok: boolean }> {
-  const read = await gateway.read(control.nodeId);
-  const normalized = normalizeReadValue(control, read.value);
-  return {
-    ok: read.value === rawRequestedValue,
-    value: normalized.value,
-    ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
-    ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
-  };
+  try {
+    const read = await gateway.read(control.nodeId);
+    const normalized = normalizeReadValue(control, read.value);
+    return {
+      ok: read.value === rawRequestedValue,
+      value: normalized.value,
+      ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
+      ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
+    };
+  } catch (error) {
+    const sanitized = sanitizeToolError(error, 'opcua_read_failed');
+    return { ok: false, code: 'verification_unavailable', message: sanitized.message };
+  }
+}
+
+function writeCompletionResponseCode(verification: Record<string, unknown>): string {
+  return verification['code'] === 'verification_unavailable'
+    ? 'write_outcome_unknown'
+    : 'write_accepted_verification_failed';
+}
+
+function writeCompletionAuditResult(verification: Record<string, unknown> & { ok: boolean }): string {
+  if (verification.ok) return 'succeeded';
+  return verification['code'] === 'verification_unavailable' ? 'unknown_outcome' : 'verification_failed';
 }
 
 function normalizeWriteControlValue(
