@@ -34,6 +34,120 @@ controls:
 `;
 
 describe('CLI admin workflows', () => {
+  it('doctor exits 0 with JSON success when local and online diagnostics pass', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': { exists: true, browseable: true },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: true,
+        dataType: 'Boolean',
+      },
+    });
+
+    const result = await runCli(['doctor', '--config', configPath, '--format', 'json'], gateway);
+
+    const output = asRecord(JSON.parse(result.stdout) as unknown);
+    expect(result.exitCode).toBe(0);
+    expect(output['ok']).toBe(true);
+    expect(output['resultClass']).toBe('success');
+    const localValidation = asRecord(output['localValidation']);
+    expect(localValidation['ok']).toBe(true);
+    expect(typeof localValidation['configHash']).toBe('string');
+    expect(output['onlineDiagnostics']).toMatchObject({ state: 'valid', blockingErrors: [] });
+    expect(output['warnings']).toEqual([]);
+    expect(gateway.connect).toHaveBeenCalledOnce();
+    expect(gateway.close).toHaveBeenCalledOnce();
+    expect(gateway.write).not.toHaveBeenCalled();
+    expect(gateway.read).not.toHaveBeenCalled();
+    expect(gateway.readMany).not.toHaveBeenCalled();
+    expect(gateway.browse).not.toHaveBeenCalled();
+  });
+
+  it('doctor stops before online diagnostics when local validation fails', async () => {
+    const configPath = writeTempConfig(`${configYaml}unexpectedField: true\n`);
+    const gateway = fakeGateway({});
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'local_validation_failed',
+      localValidation: { ok: false, errors: [{ code: 'unrecognized_keys', path: '(root)' }] },
+    });
+    expect(gateway.connect).not.toHaveBeenCalled();
+  });
+
+  it('doctor exits 3 for online blocking errors', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': { exists: true, browseable: true },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: false,
+        dataType: 'Boolean',
+      },
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'online_blocking_errors',
+      onlineDiagnostics: {
+        state: 'invalid',
+        blockingErrors: [{ code: 'control_target_not_writable', controlName: 'motor_enabled' }],
+      },
+    });
+  });
+
+  it('doctor exits 4 when online diagnostics are incomplete because the OPC UA Server is unavailable', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({}, [], {}, { state: 'reconnecting', connectionGeneration: 1 });
+
+    const result = await runCli(['doctor', '--config', configPath, '--online-timeout-ms', '0'], gateway);
+
+    expect(result.exitCode).toBe(4);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'online_diagnostics_unavailable',
+      onlineDiagnostics: { state: 'pending', unavailableReasons: [{ code: 'online_validation_pending' }] },
+    });
+  });
+
+  it('doctor reports commissioning warnings and can fail strictly on them', async () => {
+    const configPath = writeTempConfig(configYaml.replace('controls:\n  items:', 'controls:\n  enabled: false\n  items:'));
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': { exists: true, browseable: true },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: true,
+        dataType: 'Boolean',
+      },
+    });
+
+    const warningResult = await runCli(['doctor', '--config', configPath], gateway);
+    const strictResult = await runCli(['doctor', '--config', configPath, '--strict-warnings'], gateway);
+
+    expect(warningResult.exitCode).toBe(0);
+    expect(JSON.parse(warningResult.stdout)).toMatchObject({
+      ok: true,
+      resultClass: 'commissioning_warnings',
+      warnings: [{ code: 'controls_disabled' }],
+    });
+    expect(strictResult.exitCode).toBe(5);
+    expect(JSON.parse(strictResult.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'strict_warning_failure',
+      warnings: [{ code: 'controls_disabled' }],
+    });
+  });
+
   it('validate performs local validation without creating an OPC UA gateway', async () => {
     const configPath = writeTempConfig(configYaml);
     let exitCode = 0;
@@ -192,20 +306,29 @@ function fakeGateway(
   metadata: Record<string, NodeMetadataResult>,
   browseResults: BrowseNodeResult[] = [],
   readResults: Record<string, ReadValueResult> = {},
-): OpcUaGateway & { connect: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } {
+  status: OpcUaStatus = { state: 'connected', connectionGeneration: 1 },
+): OpcUaGateway & {
+  connect: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+  browse: ReturnType<typeof vi.fn>;
+  read: ReturnType<typeof vi.fn>;
+  readMany: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+} {
   return {
-    status: (): Promise<OpcUaStatus> => Promise.resolve({ state: 'connected', connectionGeneration: 1 }),
+    status: (): Promise<OpcUaStatus> => Promise.resolve(status),
     connect: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
-    browse: () => Promise.resolve(browseResults),
-    read: (nodeId) => {
+    browse: vi.fn(() => Promise.resolve(browseResults)),
+    read: vi.fn((nodeId: string) => {
       const result = readResults[nodeId];
       if (result === undefined) return Promise.reject(new Error('not readable'));
       return Promise.resolve(result);
-    },
-    readMany: (nodeIds) =>
+    }),
+    readMany: vi.fn((nodeIds: string[]) =>
       Promise.all(nodeIds.map((nodeId) => Promise.resolve(readResults[nodeId] ?? { nodeId, value: null }))),
-    write: () => Promise.resolve({ opcuaStatus: 'Good' }),
+    ),
+    write: vi.fn(() => Promise.resolve({ opcuaStatus: 'Good' })),
     getNodeMetadata: (nodeId) => Promise.resolve(metadata[nodeId] ?? { exists: false }),
   };
 }

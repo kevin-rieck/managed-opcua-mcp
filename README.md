@@ -31,6 +31,7 @@ Copy `examples/local.config.yaml` to a non-committed local config and edit it fo
 ```bash
 cp examples/local.config.yaml opcua-mcp.local.yaml
 npm run dev -- validate --config opcua-mcp.local.yaml
+npm run dev -- doctor --config opcua-mcp.local.yaml --format json
 npm run dev -- serve --config opcua-mcp.local.yaml
 ```
 

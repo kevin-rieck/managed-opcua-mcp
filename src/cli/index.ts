@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import { JsonlAuditSink } from '../audit/jsonl-audit-sink.js';
 import { loadConfigFile, type LoadedConfig } from '../config/load-config.js';
-import { getOnlineValidation } from '../mcp/online-validation.js';
+import { getOnlineValidation, type OnlineValidationResult } from '../mcp/online-validation.js';
 import { startMcpServer } from '../mcp/server.js';
 import type { AppConfig } from '../config/schema.js';
 import type { BrowseNodeResult, NodeMetadataResult, OpcUaGateway, ReadValueResult } from '../opcua/gateway.js';
@@ -24,6 +24,18 @@ interface DiscoverOptions {
   root: string;
   out: string;
   depth?: string;
+}
+
+interface DoctorOptions {
+  config: string;
+  format?: string;
+  strictWarnings?: boolean;
+  onlineTimeoutMs?: string;
+}
+
+interface DoctorWarning extends Record<string, unknown> {
+  code: string;
+  message: string;
 }
 
 const OPERATOR_REVIEW_WARNING =
@@ -55,6 +67,17 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .description('Validate local config schema and safety rules without OPC UA network I/O')
     .action(async (actionOptions: { config: string }) => {
       await runLocalValidationCommand(actionOptions.config, stdout, setExitCode);
+    });
+
+  program
+    .command('doctor')
+    .requiredOption('-c, --config <path>', 'Path to YAML config')
+    .option('--format <format>', 'Output format: json', 'json')
+    .option('--strict-warnings', 'Exit non-zero when commissioning warnings are present')
+    .option('--online-timeout-ms <number>', 'Maximum time to wait for online validation connection', '5000')
+    .description('Run local validation and online commissioning diagnostics')
+    .action(async (actionOptions: DoctorOptions) => {
+      await runDoctorCommand(actionOptions, gatewayFactory, stdout, setExitCode);
     });
 
   program
@@ -135,13 +158,127 @@ async function runLocalValidationCommand(
   stdout: (text: string) => void,
   setExitCode: (code: number) => void,
 ): Promise<void> {
-  try {
-    const loaded = await loadConfigFile(configPath);
-    stdout(`${JSON.stringify(redactSecrets({ ok: true, configHash: loaded.configHash }), null, 2)}\n`);
-  } catch (error) {
-    setExitCode(1);
-    stdout(`${JSON.stringify(redactSecrets(formatValidationFailure(error)), null, 2)}\n`);
+  const result = await loadConfigForCli(configPath);
+  if (result.ok) {
+    stdout(`${JSON.stringify(redactSecrets({ ok: true, configHash: result.loaded.configHash }), null, 2)}\n`);
+    return;
   }
+  setExitCode(1);
+  stdout(`${JSON.stringify(redactSecrets(result.failure), null, 2)}\n`);
+}
+
+async function loadConfigForCli(
+  configPath: string,
+): Promise<{ ok: true; loaded: LoadedConfig } | { ok: false; failure: ReturnType<typeof formatValidationFailure> }> {
+  try {
+    return { ok: true, loaded: await loadConfigFile(configPath) };
+  } catch (error) {
+    return { ok: false, failure: formatValidationFailure(error) };
+  }
+}
+
+async function runDoctorCommand(
+  options: DoctorOptions,
+  gatewayFactory: (config: AppConfig) => OpcUaGateway,
+  stdout: (text: string) => void,
+  setExitCode: (code: number) => void,
+): Promise<void> {
+  if (options.format !== undefined && options.format !== 'json') {
+    setExitCode(2);
+    throw new CommanderError(2, 'commander.invalidArgument', 'doctor only supports --format json');
+  }
+
+  const local = await loadConfigForCli(options.config);
+  if (!local.ok) {
+    setExitCode(1);
+    stdout(
+      `${JSON.stringify(
+        redactSecrets({
+          ok: false,
+          resultClass: 'local_validation_failed',
+          localValidation: { ok: false, errors: local.failure.validationErrors },
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+
+  const gateway = gatewayFactory(local.loaded.config);
+  let onlineValidation: OnlineValidationResult;
+  try {
+    await gateway.connect();
+    await waitForOnlineValidationAttempt(gateway, parseOnlineTimeout(options.onlineTimeoutMs));
+    onlineValidation = await getOnlineValidation(local.loaded.config, gateway, {});
+  } finally {
+    await gateway.close();
+  }
+
+  const warnings = commissioningWarnings(local.loaded.config);
+  const base = {
+    localValidation: { ok: true, configHash: local.loaded.configHash },
+    onlineDiagnostics: doctorOnlineDiagnostics(onlineValidation),
+    warnings,
+  };
+
+  if (onlineValidation.state === 'pending') {
+    setExitCode(4);
+    stdout(
+      `${JSON.stringify(redactSecrets({ ok: false, resultClass: 'online_diagnostics_unavailable', ...base }), null, 2)}\n`,
+    );
+    return;
+  }
+
+  if (onlineValidation.state === 'invalid') {
+    setExitCode(3);
+    stdout(`${JSON.stringify(redactSecrets({ ok: false, resultClass: 'online_blocking_errors', ...base }), null, 2)}\n`);
+    return;
+  }
+
+  if (warnings.length > 0 && options.strictWarnings === true) {
+    setExitCode(5);
+    stdout(`${JSON.stringify(redactSecrets({ ok: false, resultClass: 'strict_warning_failure', ...base }), null, 2)}\n`);
+    return;
+  }
+
+  stdout(
+    `${JSON.stringify(
+      redactSecrets({ ok: true, resultClass: warnings.length > 0 ? 'commissioning_warnings' : 'success', ...base }),
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+function doctorOnlineDiagnostics(validation: OnlineValidationResult): Record<string, unknown> {
+  if (validation.state === 'pending') {
+    return {
+      state: 'pending',
+      unavailableReasons: validation.reasons,
+      connectionGeneration: validation.connectionGeneration,
+    };
+  }
+  return {
+    state: validation.state,
+    blockingErrors: validation.reasons,
+    readRoots: validation.readRoots,
+    controls: validation.controls,
+    connectionGeneration: validation.connectionGeneration,
+  };
+}
+
+function commissioningWarnings(config: AppConfig): DoctorWarning[] {
+  if (config.controls === undefined) return [];
+  if (!config.controls.enabled && config.controls.items.length > 0) {
+    return [
+      {
+        code: 'controls_disabled',
+        message: 'controls.enabled is false; Semantic Controls are visible for commissioning but not executable.',
+      },
+    ];
+  }
+  return [];
 }
 
 async function runOnlineValidation(

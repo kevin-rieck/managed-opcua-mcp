@@ -183,7 +183,13 @@ Validate config locally before running. This checks YAML, schema, secret referen
 npm run dev -- validate --config opcua-mcp.local.yaml
 ```
 
-`validate-config` remains as a deprecated compatibility spelling. Run optional online validation with the old spelling when the OPC UA Server is reachable:
+`validate-config` remains as a deprecated compatibility spelling. Run online commissioning diagnostics with stable JSON result classes and exit codes when the OPC UA Server is reachable:
+
+```bash
+npm run dev -- doctor --config opcua-mcp.local.yaml --format json
+```
+
+For compatibility, optional online validation remains available with the old spelling:
 
 ```bash
 npm run dev -- validate-config --config opcua-mcp.local.yaml --online
