@@ -34,6 +34,30 @@ controls:
 `;
 
 describe('CLI admin workflows', () => {
+  it('validate performs local validation without creating an OPC UA gateway', async () => {
+    const configPath = writeTempConfig(configYaml);
+    let exitCode = 0;
+    let stdout = '';
+    const program = createCliProgram({
+      gatewayFactory: () => {
+        throw new Error('validate must not create an OPC UA gateway');
+      },
+      stdout: (text) => {
+        stdout += text;
+      },
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    await program.parseAsync(['node', 'opcua-mcp', 'validate', '--config', configPath]);
+
+    const output = asRecord(JSON.parse(stdout) as unknown);
+    expect(exitCode).toBe(0);
+    expect(output['ok']).toBe(true);
+    expect(output['configHash']).toEqual(expect.any(String));
+  });
+
   it('validate-config can include online validation output from a reachable OPC UA Server', async () => {
     const configPath = writeTempConfig(configYaml);
     const gateway = fakeGateway({

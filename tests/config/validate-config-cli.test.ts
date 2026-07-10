@@ -12,10 +12,10 @@ interface SuccessfulValidationOutput {
 
 interface FailedValidationOutput {
   ok: false;
-  validationErrors: { path: string; message: string }[];
+  validationErrors: { path: string; code: string; message: string }[];
 }
 
-function runValidateConfig(configYaml: string) {
+function runValidateConfig(configYaml: string, command = 'validate') {
   const dir = join(tmpdir(), `opcua-mcp-config-${randomUUID()}`);
   // Test-owned temporary directory path.
   // eslint-disable-next-line security/detect-non-literal-fs-filename
@@ -25,13 +25,15 @@ function runValidateConfig(configYaml: string) {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   writeFileSync(configPath, configYaml);
 
-  return spawnSync(
-    process.execPath,
-    ['--import', 'tsx', 'src/cli/index.ts', 'validate-config', '--config', configPath],
-    {
-      encoding: 'utf8',
-    },
-  );
+  return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/index.ts', command, '--config', configPath], {
+    encoding: 'utf8',
+  });
+}
+
+function runCli(args: string[]) {
+  return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/index.ts', ...args], {
+    encoding: 'utf8',
+  });
 }
 
 const readConfig = `
@@ -79,7 +81,7 @@ controls:
       riskNote: Safe simulator setpoint.
 `;
 
-describe('validate-config CLI', () => {
+describe('validate CLI', () => {
   it('prints a deterministic non-secret config hash for valid read config', () => {
     const first = runValidateConfig(readConfig);
     const second = runValidateConfig(readConfig);
@@ -111,9 +113,41 @@ describe('validate-config CLI', () => {
     expect(body.ok).toBe(false);
     expect(body.validationErrors).toHaveLength(1);
     expect(body.validationErrors[0]?.path).toBe('(root)');
+    expect(body.validationErrors[0]?.code).toBe('unrecognized_keys');
     expect(body.validationErrors[0]?.message).toContain(
       "Unrecognized key(s) in object: 'unexpectedField'",
     );
+  });
+
+  it('keeps validate-config as a compatibility alias with a deprecation warning', () => {
+    const result = runValidateConfig(readConfig, 'validate-config');
+
+    expect(result.status).toBe(0);
+    expect(parseSuccessfulValidationOutput(result.stdout).ok).toBe(true);
+    expect(result.stderr).toContain('validate-config is deprecated; use validate instead.');
+  });
+
+  it('returns exit code 1 and JSON details for unreadable config files', () => {
+    const result = runCli(['validate', '--config', '/path/that/does/not/exist.yaml']);
+
+    expect(result.status).toBe(1);
+    const body = parseFailedValidationOutput(result.stdout);
+    expect(body.validationErrors[0]).toMatchObject({ path: '(root)', code: 'ENOENT' });
+  });
+
+  it('returns exit code 1 and JSON details for unparseable config files', () => {
+    const result = runValidateConfig('version: [unterminated\n');
+
+    expect(result.status).toBe(1);
+    const body = parseFailedValidationOutput(result.stdout);
+    expect(body.validationErrors[0]).toMatchObject({ path: '(root)', code: 'YAML_PARSE_ERROR' });
+  });
+
+  it('returns exit code 2 for CLI usage errors', () => {
+    const result = runCli(['validate']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("required option '-c, --config <path>' not specified");
   });
 });
 
@@ -160,12 +194,14 @@ function isFailedValidationOutput(value: unknown): value is FailedValidationOutp
   );
 }
 
-function isValidationError(value: unknown): value is { path: string; message: string } {
+function isValidationError(value: unknown): value is { path: string; code: string; message: string } {
   return (
     typeof value === 'object' &&
     value !== null &&
     'path' in value &&
     typeof value.path === 'string' &&
+    'code' in value &&
+    typeof value.code === 'string' &&
     'message' in value &&
     typeof value.message === 'string'
   );

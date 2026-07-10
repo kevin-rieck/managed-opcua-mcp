@@ -177,13 +177,13 @@ cp examples/local.config.yaml opcua-mcp.local.yaml
 
 Edit `opcua-mcp.local.yaml` for your OPC UA Server endpoint, credentials, Read Entry Points, audit file, and any Semantic Controls. Keep `*.local.yaml` uncommitted.
 
-Validate config before running:
+Validate config locally before running. This checks YAML, schema, secret references, config hashing, Read Entry Points, Control Catalog safety rules, and audit shape without OPC UA network I/O:
 
 ```bash
-npm run dev -- validate-config --config opcua-mcp.local.yaml
+npm run dev -- validate --config opcua-mcp.local.yaml
 ```
 
-Run optional online validation when the OPC UA Server is reachable:
+`validate-config` remains as a deprecated compatibility spelling. Run optional online validation with the old spelling when the OPC UA Server is reachable:
 
 ```bash
 npm run dev -- validate-config --config opcua-mcp.local.yaml --online

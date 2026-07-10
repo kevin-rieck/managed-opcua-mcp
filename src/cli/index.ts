@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { JsonlAuditSink } from '../audit/jsonl-audit-sink.js';
@@ -32,6 +32,7 @@ const OPERATOR_REVIEW_WARNING =
 export function createCliProgram(options: CliProgramOptions = {}): Command {
   const gatewayFactory = options.gatewayFactory ?? ((config) => new NodeOpcUaGateway({ connection: config.connection }));
   const stdout = options.stdout ?? ((text) => console.log(text));
+  const stderr = options.stderr ?? ((text) => console.error(text));
   const setExitCode = options.setExitCode ?? ((code) => {
     process.exitCode = code;
   });
@@ -41,25 +42,41 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   program
     .name('opcua-mcp')
     .description('MCP server for scoped OPC UA read access and operator-approved semantic controls')
-    .version('0.1.0');
+    .version('0.1.0')
+    .exitOverride((error) => {
+      if (error.exitCode !== 0) setExitCode(2);
+      throw error;
+    });
+
+  program
+    .command('validate')
+    .requiredOption('-c, --config <path>', 'Path to YAML config')
+    .option('--json', 'Emit JSON validation output (default)')
+    .description('Validate local config schema and safety rules without OPC UA network I/O')
+    .action(async (actionOptions: { config: string }) => {
+      await runLocalValidationCommand(actionOptions.config, stdout, setExitCode);
+    });
 
   program
     .command('validate-config')
     .requiredOption('-c, --config <path>', 'Path to YAML config')
     .option('--online', 'Also validate against the configured OPC UA Server when reachable')
     .option('--online-timeout-ms <number>', 'Maximum time to wait for online validation connection', '5000')
-    .description('Validate local config schema and safety rules')
+    .description('Deprecated alias for validate; --online keeps the previous networked validation behavior')
     .action(async (actionOptions: { config: string; online?: boolean; onlineTimeoutMs?: string }) => {
+      stderr('validate-config is deprecated; use validate instead.\n');
+      if (actionOptions.online !== true) {
+        await runLocalValidationCommand(actionOptions.config, stdout, setExitCode);
+        return;
+      }
       try {
         const loaded = await loadConfigFile(actionOptions.config);
         const output: Record<string, unknown> = { ok: true, configHash: loaded.configHash };
-        if (actionOptions.online === true) {
-          output['onlineValidation'] = await runOnlineValidation(
-            loaded,
-            gatewayFactory,
-            parseOnlineTimeout(actionOptions.onlineTimeoutMs),
-          );
-        }
+        output['onlineValidation'] = await runOnlineValidation(
+          loaded,
+          gatewayFactory,
+          parseOnlineTimeout(actionOptions.onlineTimeoutMs),
+        );
         stdout(`${JSON.stringify(redactSecrets(output), null, 2)}\n`);
       } catch (error) {
         setExitCode(1);
@@ -106,7 +123,25 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
-  await createCliProgram().parseAsync(process.argv);
+  try {
+    await createCliProgram().parseAsync(process.argv);
+  } catch (error) {
+    if (!(error instanceof CommanderError)) throw error;
+  }
+}
+
+async function runLocalValidationCommand(
+  configPath: string,
+  stdout: (text: string) => void,
+  setExitCode: (code: number) => void,
+): Promise<void> {
+  try {
+    const loaded = await loadConfigFile(configPath);
+    stdout(`${JSON.stringify(redactSecrets({ ok: true, configHash: loaded.configHash }), null, 2)}\n`);
+  } catch (error) {
+    setExitCode(1);
+    stdout(`${JSON.stringify(redactSecrets(formatValidationFailure(error)), null, 2)}\n`);
+  }
 }
 
 async function runOnlineValidation(
@@ -248,13 +283,14 @@ function isSecretKey(key: string): boolean {
 
 function formatValidationFailure(error: unknown): {
   ok: false;
-  validationErrors: { path: string; message: string }[];
+  validationErrors: { path: string; code: string; message: string }[];
 } {
   if (error instanceof z.ZodError) {
     return {
       ok: false,
       validationErrors: error.issues.map((issue) => ({
         path: issue.path.length === 0 ? '(root)' : issue.path.join('.'),
+        code: issue.code,
         message: issue.message,
       })),
     };
@@ -265,8 +301,17 @@ function formatValidationFailure(error: unknown): {
     validationErrors: [
       {
         path: '(root)',
+        code: errorCode(error),
         message: error instanceof Error ? error.message : 'Unknown validation error.',
       },
     ],
   };
+}
+
+function errorCode(error: unknown): string {
+  if (error instanceof YAML.YAMLParseError) return 'YAML_PARSE_ERROR';
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') {
+    return error.code;
+  }
+  return 'validation_error';
 }
