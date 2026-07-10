@@ -96,6 +96,8 @@ interface NodeOpcUaModule {
   MessageSecurityMode: Record<string, unknown>;
   SecurityPolicy: Record<string, unknown>;
   UserTokenType: { UserName: unknown };
+  DataType: Record<number, string | undefined>;
+  NodeClass: Record<number, string | undefined>;
 }
 
 const require = createRequire(import.meta.url);
@@ -338,25 +340,29 @@ function stringifyOpcUaValue(value: unknown): string | undefined {
 
 function stringifyDataType(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    return (require('node-opcua') as any).DataType[value] ?? String(value);
+    const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
+    return nodeOpcUa.DataType[value] ?? String(value);
   }
   return stringifyOpcUaValue(value);
 }
 
 function stringifyNodeClass(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    return (require('node-opcua') as any).NodeClass[value] ?? String(value);
+    const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
+    return nodeOpcUa.NodeClass[value] ?? String(value);
   }
   return stringifyOpcUaValue(value);
 }
 
 function stringifyStatusCode(value: unknown): string | undefined {
-  if (typeof value === 'object' && value !== null && 'name' in value && typeof (value as any).name === 'string') {
-    return (value as any).name;
-  }
+  if (hasStatusName(value)) return value.name;
   return stringifyOpcUaValue(value);
+}
+
+function hasStatusName(value: unknown): value is { name: string } {
+  return (
+    typeof value === 'object' && value !== null && 'name' in value && typeof value.name === 'string'
+  );
 }
 
 function hasCustomToString(value: unknown): value is { toString: () => string } {

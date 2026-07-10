@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'eslint.config.js'],
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.tmp/**', 'eslint.config.js'],
   },
   js.configs.recommended,
   security.configs.recommended,
@@ -22,7 +22,7 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/no-confusing-void-expression': 'off',
-      'security/detect-object-injection': 'off'
+      'security/detect-object-injection': 'off',
     },
   },
 );
