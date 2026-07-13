@@ -84,6 +84,9 @@ describe('CLI admin workflows', () => {
       if (description.attributeId === 14) {
         return Promise.resolve({ value: { value: 1 }, statusCode: { name: 'Good' } });
       }
+      if (description.attributeId === 15) {
+        return Promise.resolve({ value: { value: -1 }, statusCode: { name: 'Good' } });
+      }
       if (description.attributeId === 18) {
         return Promise.resolve({ value: { value: 3 }, statusCode: { name: 'Good' } });
       }
@@ -126,7 +129,12 @@ describe('CLI admin workflows', () => {
       close: () => Promise.resolve(),
       browse: () => Promise.resolve({ references: [], statusCode: { name: 'Good' } }),
       read: (description: { nodeId: string; attributeId: number }) => {
-        const value = description.attributeId === 1 ? description.nodeId : 1;
+        const value =
+          description.attributeId === 1
+            ? description.nodeId
+            : description.attributeId === 15
+              ? -1
+              : 1;
         return Promise.resolve({ value: { value }, statusCode: { name: 'Good' } });
       },
       write,
@@ -153,7 +161,21 @@ describe('CLI admin workflows', () => {
       resultClass: 'online_blocking_errors',
       onlineDiagnostics: {
         state: 'invalid',
-        blockingErrors: [{ code: 'control_target_not_writable', controlName: 'motor_enabled' }],
+        blockingErrors: [
+          {
+            code: 'control_target_not_writable',
+            controlName: 'motor_enabled',
+            evidence: {
+              attributeStatuses: {
+                nodeId: 'Good',
+                browse: 'Good',
+                dataType: 'Good',
+                valueRank: 'Good',
+                userAccessLevel: 'Good',
+              },
+            },
+          },
+        ],
       },
     });
     expect(write).not.toHaveBeenCalled();
@@ -181,6 +203,79 @@ describe('CLI admin workflows', () => {
     });
   });
 
+  it('doctor distinguishes Read Entry Point access denial from a missing Node', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': {
+        exists: false,
+        browseable: false,
+        attributeStatuses: { nodeId: 'BadUserAccessDenied', browse: 'BadUserAccessDenied' },
+      },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: true,
+        dataType: 'Boolean',
+        valueRank: -1,
+      },
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      onlineDiagnostics: {
+        blockingErrors: [
+          {
+            code: 'read_root_unavailable',
+            nodeId: 'ns=2;s=Machine',
+            evidence: {
+              attributeStatuses: {
+                nodeId: 'BadUserAccessDenied',
+                browse: 'BadUserAccessDenied',
+              },
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('doctor preserves partial control metadata failures alongside other findings', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': { exists: true, browseable: true },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: false,
+        valueRank: -1,
+        attributeStatuses: {
+          nodeId: 'Good',
+          browse: 'Good',
+          dataType: 'BadUserAccessDenied',
+          valueRank: 'Good',
+          userAccessLevel: 'Good',
+        },
+      },
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      onlineDiagnostics: {
+        blockingErrors: [
+          { code: 'control_target_not_writable' },
+          {
+            code: 'control_target_datatype_unavailable',
+            evidence: { attributeStatuses: { dataType: 'BadUserAccessDenied' } },
+          },
+        ],
+      },
+    });
+  });
+
   it('doctor stops before online diagnostics when local validation fails', async () => {
     const configPath = writeTempConfig(`${configYaml}unexpectedField: true\n`);
     const gateway = fakeGateway({});
@@ -194,6 +289,39 @@ describe('CLI admin workflows', () => {
       localValidation: { ok: false, errors: [{ code: 'unrecognized_keys', path: '(root)' }] },
     });
     expect(gateway.connect).not.toHaveBeenCalled();
+  });
+
+  it('doctor classifies non-scalar Semantic Control targets as online blocking errors', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({
+      'ns=2;s=Machine': { exists: true, browseable: true },
+      'ns=2;s=Machine.MotorEnabled': {
+        exists: true,
+        readable: true,
+        writable: true,
+        dataType: 'Boolean',
+        valueRank: 1,
+      },
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'online_blocking_errors',
+      onlineDiagnostics: {
+        state: 'invalid',
+        blockingErrors: [
+          {
+            code: 'control_target_unsupported_shape',
+            controlName: 'motor_enabled',
+            expectedValueRank: -1,
+            actualValueRank: 1,
+          },
+        ],
+      },
+    });
   });
 
   it('doctor exits 3 for online blocking errors', async () => {

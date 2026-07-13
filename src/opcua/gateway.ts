@@ -42,6 +42,14 @@ export interface NodeMetadataResult {
   readable?: boolean;
   writable?: boolean;
   dataType?: string;
+  valueRank?: number;
+  attributeStatuses?: {
+    browse?: string;
+    nodeId?: string;
+    dataType?: string;
+    valueRank?: string;
+    userAccessLevel?: string;
+  };
 }
 
 export interface OpcUaGateway {

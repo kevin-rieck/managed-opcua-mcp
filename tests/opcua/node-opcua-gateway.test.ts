@@ -143,6 +143,8 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       readable: true,
       writable: false,
       dataType: 'Double',
+      valueRank: -1,
+      attributeStatuses: goodMetadataStatuses(),
     });
     expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
   });
@@ -159,7 +161,9 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
                 ? 'ns=2;s=Machine.SpeedSetpoint'
                 : description.attributeId === 14
                   ? 11
-                  : 3,
+                  : description.attributeId === 15
+                    ? -1
+                    : 3,
           },
           statusCode: { name: 'Good' },
         }),
@@ -179,6 +183,8 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       readable: true,
       writable: true,
       dataType: 'Double',
+      valueRank: -1,
+      attributeStatuses: goodMetadataStatuses(),
     });
   });
 
@@ -207,6 +213,13 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     await expect(gateway.getNodeMetadata('ns=2;s=Machine')).resolves.toEqual({
       exists: true,
       browseable: false,
+      attributeStatuses: {
+        browse: 'BadUserAccessDenied',
+        nodeId: 'Good',
+        dataType: 'BadAttributeIdInvalid',
+        valueRank: 'BadAttributeIdInvalid',
+        userAccessLevel: 'BadAttributeIdInvalid',
+      },
     });
   });
 
@@ -366,6 +379,16 @@ function rejectingClient(error: Error): TestClient {
     createSession,
     createSessionMock: createSession,
     disconnect: vi.fn(() => Promise.resolve()),
+  };
+}
+
+function goodMetadataStatuses() {
+  return {
+    browse: 'Good',
+    nodeId: 'Good',
+    dataType: 'Good',
+    valueRank: 'Good',
+    userAccessLevel: 'Good',
   };
 }
 

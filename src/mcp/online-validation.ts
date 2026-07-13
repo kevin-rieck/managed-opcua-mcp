@@ -1,7 +1,9 @@
 import type { AppConfig, ControlItem } from '../config/schema.js';
-import type { OpcUaGateway, OpcUaStatus } from '../opcua/gateway.js';
+import type { NodeMetadataResult, OpcUaGateway, OpcUaStatus } from '../opcua/gateway.js';
 
 export type OnlineValidationState = 'pending' | 'valid' | 'invalid';
+
+const SCALAR_VALUE_RANK = -1;
 
 export interface OnlineValidationReason extends Record<string, unknown> {
   code: string;
@@ -39,7 +41,9 @@ export async function getOnlineValidation(
       reasons: [
         {
           code: 'online_validation_status_unavailable',
-          message: sanitizeMessage(error instanceof Error ? error.message : 'OPC UA status unavailable.'),
+          message: sanitizeMessage(
+            error instanceof Error ? error.message : 'OPC UA status unavailable.',
+          ),
         },
       ],
       controls: {},
@@ -85,11 +89,23 @@ async function validateOnlineConfig(
       continue;
     }
     if (metadata.value.exists === false || metadata.value.browseable === false) {
+      const nodeIdStatus = metadata.value.attributeStatuses?.nodeId;
+      const unavailable = metadata.value.exists === false && isAccessFailure(nodeIdStatus);
+      const missing = metadata.value.exists === false && !unavailable;
       readRoots.push({
-        code: 'read_root_not_browseable',
-        message: 'Read Entry Point is not browseable.',
+        code: unavailable
+          ? 'read_root_unavailable'
+          : missing
+            ? 'read_root_missing'
+            : 'read_root_not_browseable',
+        message: unavailable
+          ? 'Read Entry Point Node could not be inspected.'
+          : missing
+            ? 'Read Entry Point Node does not exist.'
+            : 'Read Entry Point is not browseable.',
         nodeId: root.nodeId,
         ...(root.label !== undefined ? { label: root.label } : {}),
+        ...metadataEvidence(metadata.value),
       });
     }
   }
@@ -127,22 +143,118 @@ async function validateControl(
 
   const reasons: OnlineValidationReason[] = [];
   if (metadata.value.exists === false) {
-    reasons.push(reason(control, 'control_target_missing', 'Semantic Control target Node does not exist.'));
+    const unavailable = isAccessFailure(metadata.value.attributeStatuses?.nodeId);
+    reasons.push(
+      reason(
+        control,
+        unavailable ? 'control_target_unavailable' : 'control_target_missing',
+        unavailable
+          ? 'Semantic Control target Node could not be inspected.'
+          : 'Semantic Control target Node does not exist.',
+      ),
+    );
+    return withMetadataEvidence(reasons, metadata.value);
   }
   if (metadata.value.readable === false) {
-    reasons.push(reason(control, 'control_target_not_readable', 'Semantic Control target Node is not readable.'));
+    reasons.push(
+      reason(
+        control,
+        'control_target_not_readable',
+        'Semantic Control target Node is not readable.',
+      ),
+    );
   }
   if (metadata.value.writable === false) {
-    reasons.push(reason(control, 'control_target_not_writable', 'Semantic Control target Node is not writable.'));
+    reasons.push(
+      reason(
+        control,
+        'control_target_not_writable',
+        'Semantic Control target Node is not writable.',
+      ),
+    );
+  }
+  if (
+    metadata.value.dataType === undefined &&
+    isBadStatus(metadata.value.attributeStatuses?.dataType)
+  ) {
+    reasons.push(
+      reason(
+        control,
+        'control_target_datatype_unavailable',
+        'Semantic Control target Node data type could not be inspected.',
+      ),
+    );
+  }
+  if (
+    metadata.value.valueRank === undefined &&
+    isBadStatus(metadata.value.attributeStatuses?.valueRank)
+  ) {
+    reasons.push(
+      reason(
+        control,
+        'control_target_shape_unavailable',
+        'Semantic Control target Node value shape could not be inspected.',
+      ),
+    );
+  }
+  if (
+    (metadata.value.readable === undefined || metadata.value.writable === undefined) &&
+    isBadStatus(metadata.value.attributeStatuses?.userAccessLevel)
+  ) {
+    reasons.push(
+      reason(
+        control,
+        'control_target_access_unavailable',
+        'Semantic Control target Node session access could not be inspected.',
+      ),
+    );
   }
   if (metadata.value.dataType !== undefined && metadata.value.dataType !== control.dataType) {
     reasons.push({
-      ...reason(control, 'control_target_datatype_mismatch', 'Semantic Control target Node data type does not match configuration.'),
+      ...reason(
+        control,
+        'control_target_datatype_mismatch',
+        'Semantic Control target Node data type does not match configuration.',
+      ),
       expectedDataType: control.dataType,
       actualDataType: metadata.value.dataType,
     });
   }
-  return reasons;
+  if (metadata.value.valueRank !== undefined && metadata.value.valueRank !== SCALAR_VALUE_RANK) {
+    reasons.push({
+      ...reason(
+        control,
+        'control_target_unsupported_shape',
+        'Semantic Control target Node must have a scalar value.',
+      ),
+      expectedValueRank: SCALAR_VALUE_RANK,
+      actualValueRank: metadata.value.valueRank,
+    });
+  }
+  return withMetadataEvidence(reasons, metadata.value);
+}
+
+function withMetadataEvidence(
+  reasons: OnlineValidationReason[],
+  metadata: NodeMetadataResult,
+): OnlineValidationReason[] {
+  return reasons.map((validationReason) => ({
+    ...validationReason,
+    ...metadataEvidence(metadata),
+  }));
+}
+
+function metadataEvidence(metadata: NodeMetadataResult): Record<string, unknown> {
+  if (metadata.attributeStatuses === undefined) return {};
+  return { evidence: { attributeStatuses: metadata.attributeStatuses } };
+}
+
+function isBadStatus(status: string | undefined): boolean {
+  return status !== undefined && !status.startsWith('Good');
+}
+
+function isAccessFailure(status: string | undefined): boolean {
+  return isBadStatus(status) && status !== 'BadNodeIdUnknown';
 }
 
 function reason(control: ControlItem, code: string, message: string): OnlineValidationReason {
@@ -152,15 +264,17 @@ function reason(control: ControlItem, code: string, message: string): OnlineVali
 async function safeNodeMetadata(
   gateway: OpcUaGateway,
   nodeId: string,
-): Promise<
-  | { ok: true; value: { exists?: boolean; browseable?: boolean; readable?: boolean; writable?: boolean; dataType?: string } }
-  | { ok: false; message: string }
-> {
+): Promise<{ ok: true; value: NodeMetadataResult } | { ok: false; message: string }> {
   try {
     if (gateway.getNodeMetadata === undefined) return { ok: true, value: {} };
     return { ok: true, value: await gateway.getNodeMetadata(nodeId) };
   } catch (error) {
-    return { ok: false, message: sanitizeMessage(error instanceof Error ? error.message : 'Online validation failed.') };
+    return {
+      ok: false,
+      message: sanitizeMessage(
+        error instanceof Error ? error.message : 'Online validation failed.',
+      ),
+    };
   }
 }
 
