@@ -18,7 +18,7 @@ export interface OpcUaSessionLike {
 
 export interface OpcUaReadDescription {
   nodeId: string;
-  attributeId: 13;
+  attributeId: number;
 }
 
 export interface OpcUaWriteDescription {
@@ -44,6 +44,7 @@ export interface OpcUaBrowseDescription {
 
 export interface OpcUaBrowseResponse {
   references?: OpcUaReferenceLike[] | null;
+  statusCode?: unknown;
 }
 
 export interface OpcUaReferenceLike {
@@ -103,6 +104,11 @@ interface NodeOpcUaModule {
 const require = createRequire(import.meta.url);
 const DEFAULT_INITIAL_RECONNECT_DELAY_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 30_000;
+const ATTRIBUTE_NODE_ID = 1;
+const ATTRIBUTE_DATA_TYPE = 14;
+const ATTRIBUTE_USER_ACCESS_LEVEL = 18;
+const ACCESS_LEVEL_CURRENT_READ = 0x01;
+const ACCESS_LEVEL_CURRENT_WRITE = 0x02;
 
 export class NodeOpcUaGateway implements OpcUaGateway {
   private readonly connection: AppConfig['connection'];
@@ -224,15 +230,44 @@ export class NodeOpcUaGateway implements OpcUaGateway {
   }
 
   async getNodeMetadata(nodeId: string): Promise<NodeMetadataResult> {
-    const [browse, read] = await Promise.allSettled([this.browse(nodeId, 1), this.read(nodeId)]);
-    const metadata: NodeMetadataResult = {
-      exists: browse.status === 'fulfilled' || read.status === 'fulfilled',
-      browseable: browse.status === 'fulfilled',
-      readable: read.status === 'fulfilled',
-    };
-    if (read.status === 'fulfilled' && read.value.dataType !== undefined) {
-      metadata.dataType = read.value.dataType;
+    const session = this.session;
+    if (session?.browse === undefined || session.read === undefined || this.state !== 'connected') {
+      throw new Error('OPC UA session is not connected.');
     }
+
+    const [browse, nodeIdAttribute, dataTypeAttribute, userAccessLevelAttribute] =
+      await Promise.allSettled([
+        session.browse(buildBrowseDescription(nodeId)),
+        session.read({ nodeId, attributeId: ATTRIBUTE_NODE_ID }),
+        session.read({ nodeId, attributeId: ATTRIBUTE_DATA_TYPE }),
+        session.read({ nodeId, attributeId: ATTRIBUTE_USER_ACCESS_LEVEL }),
+      ]);
+
+    const metadata: NodeMetadataResult = {
+      exists:
+        nodeIdAttribute.status === 'fulfilled' && isGoodStatus(nodeIdAttribute.value.statusCode),
+      browseable: browse.status === 'fulfilled' && isGoodStatus(browse.value.statusCode),
+    };
+
+    if (
+      dataTypeAttribute.status === 'fulfilled' &&
+      isGoodStatus(dataTypeAttribute.value.statusCode)
+    ) {
+      const dataType = stringifyDataType(dataTypeAttribute.value.value?.value);
+      if (dataType !== undefined) metadata.dataType = dataType;
+    }
+
+    if (
+      userAccessLevelAttribute.status === 'fulfilled' &&
+      isGoodStatus(userAccessLevelAttribute.value.statusCode)
+    ) {
+      const userAccessLevel = userAccessLevelAttribute.value.value?.value;
+      if (typeof userAccessLevel === 'number') {
+        metadata.readable = (userAccessLevel & ACCESS_LEVEL_CURRENT_READ) !== 0;
+        metadata.writable = (userAccessLevel & ACCESS_LEVEL_CURRENT_WRITE) !== 0;
+      }
+    }
+
     return metadata;
   }
 
@@ -357,6 +392,10 @@ function stringifyNodeClass(value: unknown): string | undefined {
 function stringifyStatusCode(value: unknown): string | undefined {
   if (hasStatusName(value)) return value.name;
   return stringifyOpcUaValue(value);
+}
+
+function isGoodStatus(value: unknown): boolean {
+  return stringifyStatusCode(value)?.startsWith('Good') === true;
 }
 
 function hasStatusName(value: unknown): value is { name: string } {

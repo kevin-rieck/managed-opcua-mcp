@@ -110,6 +110,71 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     });
   });
 
+  it('inspects Node metadata without reading the current value', async () => {
+    const read = vi.fn((description: { attributeId: number }) => {
+      const attributes: Record<number, unknown> = {
+        1: { value: { value: 'ns=2;s=Machine.Temperature' }, statusCode: { name: 'Good' } },
+        2: { value: { value: 2 }, statusCode: { name: 'Good' } },
+        14: { value: { value: 11 }, statusCode: { name: 'Good' } },
+        15: { value: { value: -1 }, statusCode: { name: 'Good' } },
+        17: { value: { value: 3 }, statusCode: { name: 'Good' } },
+        18: { value: { value: 1 }, statusCode: { name: 'Good' } },
+      };
+      return Promise.resolve(
+        attributes[description.attributeId] ?? { statusCode: { name: 'BadAttributeIdInvalid' } },
+      );
+    });
+    const session = {
+      close: () => Promise.resolve(),
+      browse: vi.fn(() => Promise.resolve({ references: [], statusCode: { name: 'Good' } })),
+      read,
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.getNodeMetadata('ns=2;s=Machine.Temperature')).resolves.toEqual({
+      exists: true,
+      browseable: true,
+      readable: true,
+      writable: false,
+      dataType: 'Double',
+    });
+    expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
+  });
+
+  it('preserves partial metadata when expected OPC UA attribute reads fail', async () => {
+    const session = {
+      close: () => Promise.resolve(),
+      browse: vi.fn(() =>
+        Promise.resolve({ references: [], statusCode: { name: 'BadUserAccessDenied' } }),
+      ),
+      read: vi.fn((description: { attributeId: number }) =>
+        Promise.resolve(
+          description.attributeId === 1
+            ? { value: { value: 'ns=2;s=Machine' }, statusCode: { name: 'Good' } }
+            : { statusCode: { name: 'BadAttributeIdInvalid' } },
+        ),
+      ),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.getNodeMetadata('ns=2;s=Machine')).resolves.toEqual({
+      exists: true,
+      browseable: false,
+    });
+  });
+
   it('reads values from connected sessions with OPC UA status and timestamps', async () => {
     const session = {
       close: () => Promise.resolve(),

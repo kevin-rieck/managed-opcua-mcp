@@ -5,7 +5,14 @@ import { randomUUID } from 'node:crypto';
 import YAML from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
 import { createCliProgram } from '../../src/cli/index.js';
-import type { BrowseNodeResult, NodeMetadataResult, OpcUaGateway, OpcUaStatus, ReadValueResult } from '../../src/opcua/gateway.js';
+import type {
+  BrowseNodeResult,
+  NodeMetadataResult,
+  OpcUaGateway,
+  OpcUaStatus,
+  ReadValueResult,
+} from '../../src/opcua/gateway.js';
+import { NodeOpcUaGateway, type OpcUaClientLike } from '../../src/opcua/node-opcua-gateway.js';
 
 const configYaml = `
 version: 1
@@ -65,6 +72,75 @@ describe('CLI admin workflows', () => {
     expect(gateway.browse).not.toHaveBeenCalled();
   });
 
+  it('doctor uses real adapter metadata attributes without reading current Node values', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const read = vi.fn((description: { nodeId: string; attributeId: number }) => {
+      if (description.attributeId === 1) {
+        return Promise.resolve({
+          value: { value: description.nodeId },
+          statusCode: { name: 'Good' },
+        });
+      }
+      if (description.attributeId === 14) {
+        return Promise.resolve({ value: { value: 1 }, statusCode: { name: 'Good' } });
+      }
+      if (description.attributeId === 18) {
+        return Promise.resolve({ value: { value: 3 }, statusCode: { name: 'Good' } });
+      }
+      return Promise.resolve({ statusCode: { name: 'BadAttributeIdInvalid' } });
+    });
+    const session = {
+      close: () => Promise.resolve(),
+      browse: () => Promise.resolve({ references: [], statusCode: { name: 'Good' } }),
+      read,
+    };
+    const client: OpcUaClientLike = {
+      connect: () => Promise.resolve(),
+      createSession: () => Promise.resolve(session),
+      disconnect: () => Promise.resolve(),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: {
+        endpointUrl: 'opc.tcp://localhost:4840',
+        securityMode: 'None',
+        securityPolicy: 'None',
+        auth: { type: 'anonymous' },
+      },
+      clientFactory: () => client,
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      onlineDiagnostics: { state: 'valid' },
+    });
+    expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
+  });
+
+  it('doctor returns expected metadata failures as structured diagnostics', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const gateway = fakeGateway({});
+    gateway.getNodeMetadata = vi.fn(() =>
+      Promise.reject(new Error('BadUserAccessDenied\nprivate stack')),
+    );
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'online_blocking_errors',
+      onlineDiagnostics: {
+        blockingErrors: [
+          { code: 'read_root_unavailable', message: 'BadUserAccessDenied' },
+          { code: 'control_target_unavailable', message: 'BadUserAccessDenied' },
+        ],
+      },
+    });
+  });
+
   it('doctor stops before online diagnostics when local validation fails', async () => {
     const configPath = writeTempConfig(`${configYaml}unexpectedField: true\n`);
     const gateway = fakeGateway({});
@@ -109,18 +185,26 @@ describe('CLI admin workflows', () => {
     const configPath = writeTempConfig(configYaml);
     const gateway = fakeGateway({}, [], {}, { state: 'reconnecting', connectionGeneration: 1 });
 
-    const result = await runCli(['doctor', '--config', configPath, '--online-timeout-ms', '0'], gateway);
+    const result = await runCli(
+      ['doctor', '--config', configPath, '--online-timeout-ms', '0'],
+      gateway,
+    );
 
     expect(result.exitCode).toBe(4);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: false,
       resultClass: 'online_diagnostics_unavailable',
-      onlineDiagnostics: { state: 'pending', unavailableReasons: [{ code: 'online_validation_pending' }] },
+      onlineDiagnostics: {
+        state: 'pending',
+        unavailableReasons: [{ code: 'online_validation_pending' }],
+      },
     });
   });
 
   it('doctor reports commissioning warnings and can fail strictly on them', async () => {
-    const configPath = writeTempConfig(configYaml.replace('controls:\n  items:', 'controls:\n  enabled: false\n  items:'));
+    const configPath = writeTempConfig(
+      configYaml.replace('controls:\n  items:', 'controls:\n  enabled: false\n  items:'),
+    );
     const gateway = fakeGateway({
       'ns=2;s=Machine': { exists: true, browseable: true },
       'ns=2;s=Machine.MotorEnabled': {
@@ -132,7 +216,10 @@ describe('CLI admin workflows', () => {
     });
 
     const warningResult = await runCli(['doctor', '--config', configPath], gateway);
-    const strictResult = await runCli(['doctor', '--config', configPath, '--strict-warnings'], gateway);
+    const strictResult = await runCli(
+      ['doctor', '--config', configPath, '--strict-warnings'],
+      gateway,
+    );
 
     expect(warningResult.exitCode).toBe(0);
     expect(JSON.parse(warningResult.stdout)).toMatchObject({
@@ -221,7 +308,13 @@ describe('CLI admin workflows', () => {
           writable: true,
         },
       ],
-      { 'ns=2;s=Machine.SpeedSetpoint': { nodeId: 'ns=2;s=Machine.SpeedSetpoint', dataType: 'Double', value: 42 } },
+      {
+        'ns=2;s=Machine.SpeedSetpoint': {
+          nodeId: 'ns=2;s=Machine.SpeedSetpoint',
+          dataType: 'Double',
+          value: 42,
+        },
+      },
     );
 
     const result = await runCli(
@@ -254,7 +347,10 @@ describe('CLI admin workflows', () => {
   });
 });
 
-async function runCli(args: string[], gateway: OpcUaGateway): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCli(
+  args: string[],
+  gateway: OpcUaGateway,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let exitCode = 0;
   let stdout = '';
   let stderr = '';
@@ -326,7 +422,9 @@ function fakeGateway(
       return Promise.resolve(result);
     }),
     readMany: vi.fn((nodeIds: string[]) =>
-      Promise.all(nodeIds.map((nodeId) => Promise.resolve(readResults[nodeId] ?? { nodeId, value: null }))),
+      Promise.all(
+        nodeIds.map((nodeId) => Promise.resolve(readResults[nodeId] ?? { nodeId, value: null })),
+      ),
     ),
     write: vi.fn(() => Promise.resolve({ opcuaStatus: 'Good' })),
     getNodeMetadata: (nodeId) => Promise.resolve(metadata[nodeId] ?? { exists: false }),
