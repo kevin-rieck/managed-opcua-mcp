@@ -16,6 +16,7 @@ import type {
 import { NodeOpcUaGateway } from '../opcua/node-opcua-gateway.js';
 import { formatValidationFailure, redactSecrets } from './command-support.js';
 import { runDoctorCommand, type DoctorOptions } from './commands/doctor.js';
+import { runSetupCommand, type SetupOptions } from './commands/setup.js';
 import {
   runValidateCommand,
   runValidateConfigCommand,
@@ -83,6 +84,26 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .description('Run local validation and online commissioning diagnostics')
     .action(async (actionOptions: DoctorOptions) => {
       await runDoctorCommand(actionOptions, { gatewayFactory, stdout, setExitCode });
+    });
+
+  program
+    .command('setup')
+    .requiredOption('-c, --config <path>', 'Path to source YAML config')
+    .requiredOption('--out <path>', 'Operator-selected draft config output path')
+    .requiredOption('--report <path>', 'Operator-selected commissioning report output path')
+    .option(
+      '--root <nodeId>',
+      'Discovery root NodeId; may be repeated (configured Read Entry Points are the default)',
+      collectOption,
+    )
+    .option('--depth <number>', 'Maximum commissioning discovery depth', '4')
+    .option('--max-nodes <number>', 'Maximum Nodes inspected by commissioning discovery', '1000')
+    .option('--online-timeout-ms <number>', 'Maximum wait for the OPC UA connection', '5000')
+    .option('--force', 'Replace existing output files')
+    .option('--dry-run', 'Run checks and preview output paths without writing files')
+    .description('Create an Operator-review draft config and commissioning report')
+    .action(async (actionOptions: SetupOptions) => {
+      await runSetupCommand(actionOptions, { gatewayFactory, stdout, setExitCode });
     });
 
   program
@@ -235,6 +256,10 @@ function candidateName(candidate: BrowseNodeResult): string {
     .replace(/^_+|_+$/g, '')
     .toLowerCase();
   return snake.length > 0 ? snake : 'candidate_control';
+}
+
+function collectOption(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
 }
 
 function parseDepth(value: string | undefined): number {
