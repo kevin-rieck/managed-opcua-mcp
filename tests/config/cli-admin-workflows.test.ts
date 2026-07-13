@@ -119,6 +119,46 @@ describe('CLI admin workflows', () => {
     expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
   });
 
+  it('doctor reports a real adapter session without write access as a blocking diagnostic', async () => {
+    const configPath = writeTempConfig(configYaml);
+    const write = vi.fn(() => Promise.resolve({ name: 'Good' }));
+    const session = {
+      close: () => Promise.resolve(),
+      browse: () => Promise.resolve({ references: [], statusCode: { name: 'Good' } }),
+      read: (description: { nodeId: string; attributeId: number }) => {
+        const value = description.attributeId === 1 ? description.nodeId : 1;
+        return Promise.resolve({ value: { value }, statusCode: { name: 'Good' } });
+      },
+      write,
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: {
+        endpointUrl: 'opc.tcp://localhost:4840',
+        securityMode: 'None',
+        securityPolicy: 'None',
+        auth: { type: 'anonymous' },
+      },
+      clientFactory: () => ({
+        connect: () => Promise.resolve(),
+        createSession: () => Promise.resolve(session),
+        disconnect: () => Promise.resolve(),
+      }),
+    });
+
+    const result = await runCli(['doctor', '--config', configPath], gateway);
+
+    expect(result.exitCode).toBe(3);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      resultClass: 'online_blocking_errors',
+      onlineDiagnostics: {
+        state: 'invalid',
+        blockingErrors: [{ code: 'control_target_not_writable', controlName: 'motor_enabled' }],
+      },
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('doctor returns expected metadata failures as structured diagnostics', async () => {
     const configPath = writeTempConfig(configYaml);
     const gateway = fakeGateway({});

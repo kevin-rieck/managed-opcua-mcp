@@ -147,6 +147,41 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
   });
 
+  it('maps writable session access from OPC UA UserAccessLevel metadata', async () => {
+    const session = {
+      close: () => Promise.resolve(),
+      browse: vi.fn(() => Promise.resolve({ references: [], statusCode: { name: 'Good' } })),
+      read: vi.fn((description: { attributeId: number }) =>
+        Promise.resolve({
+          value: {
+            value:
+              description.attributeId === 1
+                ? 'ns=2;s=Machine.SpeedSetpoint'
+                : description.attributeId === 14
+                  ? 11
+                  : 3,
+          },
+          statusCode: { name: 'Good' },
+        }),
+      ),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+
+    await expect(gateway.getNodeMetadata('ns=2;s=Machine.SpeedSetpoint')).resolves.toEqual({
+      exists: true,
+      browseable: true,
+      readable: true,
+      writable: true,
+      dataType: 'Double',
+    });
+  });
+
   it('preserves partial metadata when expected OPC UA attribute reads fail', async () => {
     const session = {
       close: () => Promise.resolve(),
