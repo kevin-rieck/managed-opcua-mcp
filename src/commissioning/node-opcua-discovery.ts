@@ -11,6 +11,7 @@ import type {
   Evidence,
   SanitizedOpcUaStatus,
 } from './discovery.js';
+import { generateDraftSemanticControlCandidates } from './draft-semantic-controls.js';
 import type {
   OpcUaBrowseResponse,
   OpcUaDataValueLike,
@@ -228,7 +229,7 @@ export async function discoverWithNodeOpcUa(
     ),
   };
 
-  return {
+  return generateDraftSemanticControlCandidates({
     generatedAt,
     roots: orderedRoots,
     nodes: orderedNodes,
@@ -239,7 +240,7 @@ export async function discoverWithNodeOpcUa(
     writableButNotSuggested: [],
     findings: { blocking: sortFindings(blocking), warnings: sortFindings(warnings) },
     coverage,
-  };
+  });
 }
 
 async function inspectNode(

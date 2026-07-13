@@ -217,6 +217,16 @@ describe('NodeOpcUaGateway commissioning discovery', () => {
       euRange: { value: { low: 0, high: 1800 } },
       enumStrings: { value: ['Off', 'On'] },
     });
+    expect(result.draftSemanticControls).toEqual([
+      expect.objectContaining({
+        nodeId: 'ns=2;s=Setpoint',
+        suggestedName: 'set_setpoint',
+        dataType: 'Double',
+        unit: 'rpm',
+        normalRange: { low: 0, high: 1800 },
+        draftState: 'inactive_review_required',
+      }),
+    ]);
     expect(
       read.mock.calls
         .filter((call) => call[0].attributeId === 13)

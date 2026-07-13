@@ -58,6 +58,7 @@ describe('commissioning discovery result seam', () => {
           nodeId: 'ns=2;s=Machine.SpeedSetpoint',
           suggestedName: 'set_machine_speed_setpoint',
           dataType: 'Double',
+          draftState: 'inactive_review_required',
           eligibility: 'eligible',
           reasons: ['scalar_supported_data_type', 'session_writable'],
           evidence: [evidence('candidate')],

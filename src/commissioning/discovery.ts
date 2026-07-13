@@ -182,14 +182,20 @@ export type ReadEntryPointSuggestionReason =
 export interface DraftSemanticControlCandidate {
   nodeId: string;
   suggestedName: string;
+  suggestedGroup?: string;
   description?: string;
   dataType: CommissioningSupportedControlDataType;
   unit?: string;
   normalRange?: NumericRangeFact;
-  enumValues?: EnumValueFact[];
+  enumValues?: DraftEnumValueHint[];
+  draftState: 'inactive_review_required';
   eligibility: 'eligible' | 'needs_operator_review';
   reasons: SemanticControlCandidateReason[];
   evidence: Evidence<unknown>[];
+}
+
+export interface DraftEnumValueHint extends EnumValueFact {
+  suggestedLabel: string;
 }
 
 export type SemanticControlCandidateReason =
