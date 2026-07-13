@@ -177,39 +177,120 @@ cp examples/local.config.yaml opcua-mcp.local.yaml
 
 Edit `opcua-mcp.local.yaml` for your OPC UA Server endpoint, credentials, Read Entry Points, audit file, and any Semantic Controls. Keep `*.local.yaml` uncommitted.
 
-Validate config locally before running. This checks YAML, schema, secret references, config hashing, Read Entry Points, Control Catalog safety rules, and audit shape without OPC UA network I/O:
+## Commissioning workflow
+
+Commission a new config in stages. Keep the source and generated files out of version control if they contain site details, and perform initial work against a simulator, test system, or otherwise safe OPC UA Server approved by an Operator.
+
+### 1. Create and locally validate the initial config
+
+Configure the connection and audit sink first. Add known Read Entry Points if available, but omit `controls` or keep `controls.enabled: false` during commissioning.
 
 ```bash
 npm run dev -- validate --config opcua-mcp.local.yaml
 ```
 
-`validate-config` remains as a deprecated compatibility spelling. Run online commissioning diagnostics with stable JSON result classes and exit codes when the OPC UA Server is reachable:
+`validate` checks YAML, schema, secret references, config hashing, Read Entry Points, Control Catalog safety rules, and audit shape. It performs **no OPC UA network I/O**. A successful local validation means only that the file is internally valid; it does not prove that the endpoint is reachable or that configured Nodes exist.
 
-```bash
-npm run dev -- doctor --config opcua-mcp.local.yaml --format json
-```
-
-For compatibility, optional online validation remains available with the old spelling:
+`validate-config` remains as a deprecated compatibility spelling. Its `--online` option is retained for compatibility, but new workflows should use `doctor`:
 
 ```bash
 npm run dev -- validate-config --config opcua-mcp.local.yaml --online
 ```
 
-Run the local stdio MCP Server:
+### 2. Run online diagnostics
+
+When the OPC UA Server is reachable and the intended credentials are available, inspect the configured Read Entry Points and Control Catalog:
 
 ```bash
-npm run dev -- serve --config opcua-mcp.local.yaml
+npm run dev -- doctor --config opcua-mcp.local.yaml --format json
 ```
 
-Recommended commissioning sequence:
+`doctor` first performs the same local validation and then connects to the OPC UA Server. It reports Node availability and browseability for Read Entry Points. For configured Semantic Controls, it checks target existence, scalar shape, data type compatibility, and advisory session write access. These checks read metadata, not current process values, and perform no Control Operation.
 
-1. Configure connection and audit first, with no controls.
-2. Add Read Entry Points and validate browsing with read-only tools.
-3. Draft Semantic Controls with `controls.enabled: false`.
-4. Validate locally and online.
-5. Have an Operator review every description, Risk Level, Risk Note, value constraint, and cooldown.
-6. Enable only simulator, test, or otherwise safe controls first.
-7. Review audit records after test Control Attempts.
+Interpret `doctor` results as follows:
+
+| Result class                     | Exit | Meaning                                                                                                                                         |
+| -------------------------------- | ---: | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `success`                        |    0 | Local validation and online diagnostics passed with no commissioning warnings.                                                                  |
+| `commissioning_warnings`         |    0 | Online checks passed, but Operator review is still required; for example, configured controls are disabled.                                     |
+| `local_validation_failed`        |    1 | The config is malformed or violates local schema or safety rules.                                                                               |
+| `online_blocking_errors`         |    3 | A configured Node is missing or unsuitable, authorization prevented a required check, or another online check failed. Do not serve this config. |
+| `online_diagnostics_unavailable` |    4 | Diagnostics did not complete before the online timeout. Reachability and readiness remain unknown.                                              |
+| `strict_warning_failure`         |    5 | Warnings were found while `--strict-warnings` was requested.                                                                                    |
+
+A commissioning warning is not the same as a validation failure. It records something an Operator must review or accept. An online blocking error means the config is not ready to serve. Use `--strict-warnings` in automation when warnings must also produce a non-zero exit.
+
+### 3. Run bounded discovery and setup
+
+`setup` combines local validation, bounded metadata-only discovery, online diagnostics, and generation of an Operator-review draft config and Markdown report:
+
+```bash
+npm run dev -- setup \
+  --config opcua-mcp.local.yaml \
+  --out opcua-mcp.draft.local.yaml \
+  --report commissioning-report.local.md
+```
+
+By default, discovery starts at the configured Read Entry Points, traverses only forward hierarchical references, stops at depth 4 or 1,000 visited Nodes, and records partial coverage and access failures. If no Read Entry Points are configured, or a narrower inspection is desired, provide one or more explicit roots:
+
+```bash
+npm run dev -- setup \
+  --config opcua-mcp.local.yaml \
+  --root 'ns=2;s=Machine' \
+  --root 'ns=2;s=Utilities' \
+  --depth 3 \
+  --max-nodes 500 \
+  --out opcua-mcp.draft.local.yaml \
+  --report commissioning-report.local.md
+```
+
+Discovery inspects identity, hierarchy, data type, access, engineering-unit, range, and enum metadata where available. It does **not** read current values, subscribe, write values, call methods, or otherwise perform a Control Operation. OPC UA Server authorization remains authoritative; a discovered Node or apparent write-access bit does not grant permission.
+
+`setup` refuses to overwrite either output unless `--force` is supplied. Use `--dry-run` to run checks and preview the selected paths without writing files. The command still writes review outputs when discovery is partial or online checks find blocking errors, so inspect its JSON result and exit code rather than treating file creation as success. Setup uses the same online exit meanings (`3` for blocking errors and `4` for unavailable diagnostics).
+
+### 4. Review the report and promote drafts explicitly
+
+The generated report is a review artifact, not approval to serve. Review each section:
+
+1. **Summary** — endpoint redaction mode, discovery coverage, finding counts, and recommendation.
+2. **Blocking errors** — conditions that must be resolved before serving.
+3. **Warnings** — partial or advisory findings that must be resolved or explicitly accepted by an Operator.
+4. **Required Operator decisions** — the checklist for Read Entry Points, incomplete roots, candidates, constraints, and omitted writable Nodes.
+5. **Suggested Read Entry Points** — navigation suggestions only, never authorization boundaries.
+6. **Draft Semantic Control candidates** — metadata-derived starting points for review.
+7. **Writable but not suggested** — Nodes that should normally remain outside the Control Catalog unless deliberately reviewed.
+8. **Discovery coverage and evidence** — per-root status, limits reached, and metadata success or failure.
+9. **Redaction and sensitive-data note** — what the report omits.
+10. **Setup online diagnostics** — checks against the configured Read Entry Points and Control Catalog.
+
+Generated Semantic Control candidates are comments in the draft config and are **not executable**. Setup never merges them into `controls.items`. For every candidate, an Operator must either reject it or manually promote it into the Control Catalog after confirming:
+
+- final name, description, target Node, and intended process meaning;
+- supported scalar data type and OPC UA Server authorization;
+- unit, numeric bounds, Boolean labels, or allowed values as applicable;
+- Operator-owned Risk Level and Risk Note;
+- cooldown and whether current-value confirmation is required.
+
+Discovered engineering ranges and write-access metadata are advisory, not safe operating limits or authorization. Keep promoted controls disabled with `controls.enabled: false` until review and diagnostics are complete. High-risk controls remain unsupported in v1, and medium-risk controls require Control Confirmation when used by an Agent.
+
+Reports redact the endpoint by default because it can reveal network or plant topology. They omit passwords, tokens, usernames, private-key material, environment secret references, and current OPC UA values. Evidence includes sanitized sources and OPC UA statuses. NodeIds and display names may still reveal process topology, so protect reports as site-sensitive operational records.
+
+### 5. Revalidate the reviewed draft, then serve
+
+After editing the generated draft and promoting or rejecting every candidate, repeat both checks against the draft file:
+
+```bash
+npm run dev -- validate --config opcua-mcp.draft.local.yaml
+npm run dev -- doctor --config opcua-mcp.draft.local.yaml --format json --strict-warnings
+```
+
+Resolve all blocking errors. Resolve or consciously accept warnings, verify every Read Entry Point and Semantic Control, and obtain any site-required review outside the MCP Server. Only then enable approved controls and start the stdio MCP Server:
+
+```bash
+npm run dev -- serve --config opcua-mcp.draft.local.yaml
+```
+
+Read Entry Points still do not create a read authorization boundary, and the Control Catalog does not replace OPC UA Server authorization. Start with simulator, test, or otherwise safe controls. Review audit records after test Control Attempts, verify Control Confirmation behavior for medium-risk controls, and confirm Write Verification results before broader use.
 
 ## Real OPC UA integration tests
 

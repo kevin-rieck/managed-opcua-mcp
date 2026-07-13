@@ -26,13 +26,20 @@ npm test
 
 Read the [Operator safety guide](./docs/operator-guide.md) before enabling controls.
 
-Copy `examples/local.config.yaml` to a non-committed local config and edit it for your OPC UA server.
+Copy `examples/local.config.yaml` to a non-committed local config and edit it for your OPC UA Server. Validate locally, run online diagnostics, and generate commissioning review artifacts before serving:
 
 ```bash
 cp examples/local.config.yaml opcua-mcp.local.yaml
 npm run dev -- validate --config opcua-mcp.local.yaml
 npm run dev -- doctor --config opcua-mcp.local.yaml --format json
-npm run dev -- serve --config opcua-mcp.local.yaml
+npm run dev -- setup --config opcua-mcp.local.yaml \
+  --out opcua-mcp.draft.local.yaml \
+  --report commissioning-report.local.md
+npm run dev -- validate --config opcua-mcp.draft.local.yaml
+npm run dev -- doctor --config opcua-mcp.draft.local.yaml --format json
+npm run dev -- serve --config opcua-mcp.draft.local.yaml
 ```
 
-Write examples and integration write tests must only target simulator, test, or otherwise safe nodes approved by an Operator.
+`setup` performs bounded metadata-only discovery. Generated Semantic Control candidates remain comments and cannot execute until an Operator reviews and manually promotes them into the Control Catalog. See the [commissioning workflow](./docs/operator-guide.md#commissioning-workflow) for report interpretation, exit codes, redaction, and safety boundaries.
+
+Write examples and integration write tests must only target simulator, test, or otherwise safe Nodes approved by an Operator.
