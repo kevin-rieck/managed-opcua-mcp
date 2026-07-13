@@ -1,6 +1,12 @@
 import { createRequire } from 'node:module';
 import type { AppConfig } from '../config/schema.js';
 import type {
+  CommissioningDiscoveryGateway,
+  CommissioningDiscoveryRequest,
+  CommissioningDiscoveryResult,
+} from '../commissioning/discovery.js';
+import { discoverWithNodeOpcUa } from '../commissioning/node-opcua-discovery.js';
+import type {
   BrowseNodeResult,
   NodeMetadataResult,
   OpcUaGateway,
@@ -12,6 +18,10 @@ import type {
 export interface OpcUaSessionLike {
   close(): Promise<void>;
   browse?(description: OpcUaBrowseDescription): Promise<OpcUaBrowseResponse>;
+  browseNext?(
+    continuationPoint: unknown,
+    releaseContinuationPoints: boolean,
+  ): Promise<OpcUaBrowseResponse>;
   read?(description: OpcUaReadDescription): Promise<OpcUaDataValueLike>;
   write?(description: OpcUaWriteDescription): Promise<unknown>;
 }
@@ -45,6 +55,7 @@ export interface OpcUaBrowseDescription {
 export interface OpcUaBrowseResponse {
   references?: OpcUaReferenceLike[] | null;
   statusCode?: unknown;
+  continuationPoint?: unknown;
 }
 
 export interface OpcUaReferenceLike {
@@ -53,6 +64,7 @@ export interface OpcUaReferenceLike {
   displayName?: { text?: string } | string;
   nodeClass?: unknown;
   dataType?: unknown;
+  typeDefinition?: unknown;
 }
 
 export interface OpcUaClientLike {
@@ -110,7 +122,7 @@ const ATTRIBUTE_USER_ACCESS_LEVEL = 18;
 const ACCESS_LEVEL_CURRENT_READ = 0x01;
 const ACCESS_LEVEL_CURRENT_WRITE = 0x02;
 
-export class NodeOpcUaGateway implements OpcUaGateway {
+export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGateway {
   private readonly connection: AppConfig['connection'];
   private readonly clientFactory: (options: NodeOpcUaClientFactoryOptions) => OpcUaClientLike;
   private readonly now: () => Date;
@@ -227,6 +239,15 @@ export class NodeOpcUaGateway implements OpcUaGateway {
       value: { value: { dataType, value } },
     });
     return { opcuaStatus: stringifyOpcUaValue(statusCode) ?? 'Unknown' };
+  }
+
+  async discoverCommissioning(
+    request: CommissioningDiscoveryRequest,
+  ): Promise<CommissioningDiscoveryResult> {
+    const session = this.session;
+    if (session === undefined || this.state !== 'connected')
+      throw new Error('OPC UA session is not connected.');
+    return discoverWithNodeOpcUa(session, request, this.now);
   }
 
   async getNodeMetadata(nodeId: string): Promise<NodeMetadataResult> {

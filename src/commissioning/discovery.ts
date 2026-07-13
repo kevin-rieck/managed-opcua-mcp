@@ -14,8 +14,8 @@ export interface CommissioningDiscoveryGateway {
 
 export interface CommissioningDiscoveryRequest {
   roots: string[];
-  maxDepth: number;
-  maxNodes: number;
+  maxDepth?: number;
+  maxNodes?: number;
 }
 
 export interface CommissioningDiscoveryResult {
