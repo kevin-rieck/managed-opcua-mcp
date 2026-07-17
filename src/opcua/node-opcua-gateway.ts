@@ -114,6 +114,7 @@ interface NodeOpcUaModule {
 }
 
 const require = createRequire(import.meta.url);
+let nodeOpcUaModule: NodeOpcUaModule | undefined;
 const DEFAULT_INITIAL_RECONNECT_DELAY_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 30_000;
 const ATTRIBUTE_NODE_ID = 1;
@@ -416,20 +417,48 @@ function stringifyOpcUaValue(value: unknown): string | undefined {
   return undefined;
 }
 
+const wellKnownDataTypes: Record<number, string> = {
+  1: 'Boolean',
+  2: 'SByte',
+  3: 'Byte',
+  4: 'Int16',
+  5: 'UInt16',
+  6: 'Int32',
+  7: 'UInt32',
+  8: 'Int64',
+  9: 'UInt64',
+  10: 'Float',
+  11: 'Double',
+  12: 'String',
+};
+
+const wellKnownNodeClasses: Record<number, string> = {
+  1: 'Object',
+  2: 'Variable',
+  4: 'Method',
+  8: 'ObjectType',
+  16: 'VariableType',
+  32: 'ReferenceType',
+  64: 'DataType',
+  128: 'View',
+};
+
 function stringifyDataType(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
-    return nodeOpcUa.DataType[value] ?? String(value);
+    return wellKnownDataTypes[value] ?? loadNodeOpcUaModule().DataType[value] ?? String(value);
   }
   return stringifyOpcUaValue(value);
 }
 
 function stringifyNodeClass(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
-    return nodeOpcUa.NodeClass[value] ?? String(value);
+    return wellKnownNodeClasses[value] ?? loadNodeOpcUaModule().NodeClass[value] ?? String(value);
   }
   return stringifyOpcUaValue(value);
+}
+
+function loadNodeOpcUaModule(): NodeOpcUaModule {
+  return (nodeOpcUaModule ??= require('node-opcua') as NodeOpcUaModule);
 }
 
 function stringifyStatusCode(value: unknown): string | undefined {
@@ -473,7 +502,7 @@ function hasCustomToString(value: unknown): value is { toString: () => string } 
 }
 
 function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaClientLike {
-  const nodeOpcUa = require('node-opcua') as NodeOpcUaModule;
+  const nodeOpcUa = loadNodeOpcUaModule();
   const client = nodeOpcUa.OPCUAClient.create({
     applicationName: 'opcua-mcp-server',
     connectionStrategy: { maxRetry: 0 },
