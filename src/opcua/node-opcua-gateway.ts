@@ -14,6 +14,10 @@ import type {
   ReadValueResult,
   WriteValueResult,
 } from './gateway.js';
+import {
+  WELL_KNOWN_OPC_UA_DATA_TYPES,
+  WELL_KNOWN_OPC_UA_NODE_CLASSES,
+} from './well-known-enums.js';
 
 export interface OpcUaSessionLike {
   close(): Promise<void>;
@@ -417,42 +421,22 @@ function stringifyOpcUaValue(value: unknown): string | undefined {
   return undefined;
 }
 
-const wellKnownDataTypes: Record<number, string> = {
-  1: 'Boolean',
-  2: 'SByte',
-  3: 'Byte',
-  4: 'Int16',
-  5: 'UInt16',
-  6: 'Int32',
-  7: 'UInt32',
-  8: 'Int64',
-  9: 'UInt64',
-  10: 'Float',
-  11: 'Double',
-  12: 'String',
-};
-
-const wellKnownNodeClasses: Record<number, string> = {
-  1: 'Object',
-  2: 'Variable',
-  4: 'Method',
-  8: 'ObjectType',
-  16: 'VariableType',
-  32: 'ReferenceType',
-  64: 'DataType',
-  128: 'View',
-};
-
 function stringifyDataType(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    return wellKnownDataTypes[value] ?? loadNodeOpcUaModule().DataType[value] ?? String(value);
+    return (
+      WELL_KNOWN_OPC_UA_DATA_TYPES[value] ?? loadNodeOpcUaModule().DataType[value] ?? String(value)
+    );
   }
   return stringifyOpcUaValue(value);
 }
 
 function stringifyNodeClass(value: unknown): string | undefined {
   if (typeof value === 'number') {
-    return wellKnownNodeClasses[value] ?? loadNodeOpcUaModule().NodeClass[value] ?? String(value);
+    return (
+      WELL_KNOWN_OPC_UA_NODE_CLASSES[value] ??
+      loadNodeOpcUaModule().NodeClass[value] ??
+      String(value)
+    );
   }
   return stringifyOpcUaValue(value);
 }

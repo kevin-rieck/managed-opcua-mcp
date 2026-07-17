@@ -18,6 +18,10 @@ import type {
   OpcUaReferenceLike,
   OpcUaSessionLike,
 } from '../opcua/node-opcua-gateway.js';
+import {
+  WELL_KNOWN_OPC_UA_DATA_TYPES,
+  WELL_KNOWN_OPC_UA_NODE_CLASSES,
+} from '../opcua/well-known-enums.js';
 
 const ATTRIBUTE_NODE_CLASS = 2;
 const ATTRIBUTE_BROWSE_NAME = 3;
@@ -622,42 +626,22 @@ function stringifyDisplayName(value: unknown): string | undefined {
 }
 
 function stringifyDataType(value: unknown): string | undefined {
-  const builtins: Record<number, string> = {
-    1: 'Boolean',
-    2: 'SByte',
-    3: 'Byte',
-    4: 'Int16',
-    5: 'UInt16',
-    6: 'Int32',
-    7: 'UInt32',
-    10: 'Float',
-    11: 'Double',
-    12: 'String',
-  };
-  if (typeof value === 'number') return builtins[value] ?? String(value);
+  if (typeof value === 'number') return WELL_KNOWN_OPC_UA_DATA_TYPES[value] ?? String(value);
   const text = stringifyValue(value);
   const builtInNodeId = text?.match(/^(?:ns=0;)?i=(\d+)$/)?.[1];
   if (builtInNodeId === undefined) return text;
   const identifier = Number(builtInNodeId);
-  return builtins[identifier] ?? text;
+  return WELL_KNOWN_OPC_UA_DATA_TYPES[identifier] ?? text;
 }
 
 function mapNodeClass(value: unknown): CommissioningNodeClass | undefined {
-  const classes: Record<number, CommissioningNodeClass> = {
-    1: 'Object',
-    2: 'Variable',
-    4: 'Method',
-    8: 'ObjectType',
-    16: 'VariableType',
-    32: 'ReferenceType',
-    64: 'DataType',
-    128: 'View',
-  };
-  if (typeof value === 'number') return classes[value];
-  const text = stringifyValue(value);
-  return text !== undefined && Object.values(classes).includes(text as CommissioningNodeClass)
-    ? (text as CommissioningNodeClass)
-    : undefined;
+  const text =
+    typeof value === 'number' ? WELL_KNOWN_OPC_UA_NODE_CLASSES[value] : stringifyValue(value);
+  return text !== undefined && isCommissioningNodeClass(text) ? text : undefined;
+}
+
+function isCommissioningNodeClass(value: string): value is CommissioningNodeClass {
+  return value !== 'Unspecified' && Object.values(WELL_KNOWN_OPC_UA_NODE_CLASSES).includes(value);
 }
 
 function mapEngineeringUnits(value: unknown) {
