@@ -36,6 +36,10 @@ _Avoid_: allowlist, permissions, access list, whitelist
 An Operator-provided starting Node for agent browsing and discovery in an OPC UA Server address space. Read Entry Points guide navigation but are not an authorization boundary; read access is enforced by the OPC UA Server.
 _Avoid_: read permissions, read scope, visible nodes
 
+**Semantic Layer**:
+Operator-defined metadata and policy that turns raw OPC UA Nodes into agent-understandable capabilities without replacing OPC UA Server authorization. It may describe reads, relationships, units, constraints, examples, operational context, and Semantic Controls.
+_Avoid_: tool configuration, authorization layer
+
 **Semantic Control**:
 An Operator-defined Control Operation exposed to agents by name, backed by a specific OPC UA NodeId, validation rules, and safety context. Authorization for the underlying OPC UA write is enforced by the OPC UA Server.
 _Avoid_: raw write, command
