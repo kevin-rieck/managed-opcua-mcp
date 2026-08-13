@@ -18,6 +18,14 @@ import {
   WELL_KNOWN_OPC_UA_DATA_TYPES,
   WELL_KNOWN_OPC_UA_NODE_CLASSES,
 } from './well-known-enums.js';
+import {
+  NodeOpcUaReadOnlyAdapter,
+  type NodeOpcUaBrowseDescription as InspectionBrowseDescription,
+  type NodeOpcUaBrowseResult as InspectionBrowseResult,
+  type NodeOpcUaDataValue as InspectionDataValue,
+  type NodeOpcUaReadDescription as InspectionReadDescription,
+  type ReadOnlyOpcUaProtocolAdapter,
+} from './read-only-protocol.js';
 
 export interface OpcUaSessionLike {
   close(): Promise<void>;
@@ -28,6 +36,12 @@ export interface OpcUaSessionLike {
   ): Promise<OpcUaBrowseResponse>;
   read?(description: OpcUaReadDescription): Promise<OpcUaDataValueLike>;
   write?(description: OpcUaWriteDescription): Promise<unknown>;
+  browseForInspection?(description: InspectionBrowseDescription): Promise<InspectionBrowseResult>;
+  browseNextForInspection?(
+    continuationPoints: Uint8Array[],
+    releaseContinuationPoints: boolean,
+  ): Promise<InspectionBrowseResult | InspectionBrowseResult[]>;
+  readBatch?(descriptions: InspectionReadDescription[]): Promise<InspectionDataValue[]>;
 }
 
 export interface OpcUaReadDescription {
@@ -100,9 +114,18 @@ export interface NodeOpcUaClientFactoryOptions {
 
 type Timer = ReturnType<typeof setTimeout>;
 
+interface RealNodeOpcUaSession {
+  requestedMaxReferencesPerNode: number;
+  close(): Promise<void>;
+  browse(description: unknown): Promise<unknown>;
+  browseNext(continuationPoints: unknown, releaseContinuationPoints: boolean): Promise<unknown>;
+  read(description: unknown): Promise<unknown>;
+  write(description: unknown): Promise<unknown>;
+}
+
 interface RealNodeOpcUaClient {
   connect(endpointUrl: string): Promise<void>;
-  createSession(userIdentity?: unknown): Promise<OpcUaSessionLike>;
+  createSession(userIdentity?: unknown): Promise<RealNodeOpcUaSession>;
   disconnect(): Promise<void>;
 }
 
@@ -145,6 +168,7 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
   private reconnectDelayMs: number;
   private reconnectTimer: Timer | undefined;
   private hasConnected = false;
+  private readonly inspectionAdapter: ReadOnlyOpcUaProtocolAdapter;
 
   constructor(options?: NodeOpcUaGatewayOptions) {
     this.connection = options?.connection ?? {
@@ -159,6 +183,36 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
       options?.reconnect?.initialDelayMs ?? DEFAULT_INITIAL_RECONNECT_DELAY_MS;
     this.maxReconnectDelayMs = options?.reconnect?.maxDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
     this.reconnectDelayMs = this.initialReconnectDelayMs;
+    this.inspectionAdapter = new NodeOpcUaReadOnlyAdapter({
+      currentGeneration: () =>
+        this.state === 'connected' && this.session !== undefined ? this.connectionGeneration : -1,
+      sessionSnapshot: () => {
+        const session = this.session;
+        if (
+          this.state !== 'connected' ||
+          session?.browseForInspection === undefined ||
+          session.browseNextForInspection === undefined ||
+          session.readBatch === undefined
+        ) {
+          return undefined;
+        }
+        const browse = session.browseForInspection.bind(session);
+        const browseNext = session.browseNextForInspection.bind(session);
+        const readBatch = session.readBatch.bind(session);
+        return {
+          connectionGeneration: this.connectionGeneration,
+          session: {
+            browse: (description) => browse(description),
+            browseNext: (continuationPoints, release) => browseNext(continuationPoints, release),
+            readBatch: (descriptions) => readBatch(descriptions),
+          },
+        };
+      },
+    });
+  }
+
+  readOnlyProtocol(): ReadOnlyOpcUaProtocolAdapter {
+    return this.inspectionAdapter;
   }
 
   status(): Promise<OpcUaStatus> {
@@ -501,8 +555,8 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
   return {
     connect: (endpointUrl) => client.connect(endpointUrl),
     disconnect: () => client.disconnect(),
-    createSession: (userIdentity) =>
-      client.createSession(
+    createSession: async (userIdentity) => {
+      const session = await client.createSession(
         userIdentity === undefined
           ? undefined
           : {
@@ -510,7 +564,32 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
               userName: userIdentity.userName,
               password: userIdentity.password,
             },
-      ),
+      );
+      return {
+        close: () => session.close(),
+        browse: (description) => session.browse(description) as Promise<OpcUaBrowseResponse>,
+        browseNext: (continuationPoint, release) =>
+          session.browseNext(continuationPoint, release) as Promise<OpcUaBrowseResponse>,
+        read: (description) => session.read(description) as Promise<OpcUaDataValueLike>,
+        write: (description) => session.write(description),
+        browseForInspection: (description) => {
+          const { requestedMaxReferencesPerNode, ...nativeDescription } = description;
+          const previousMaximum = session.requestedMaxReferencesPerNode;
+          session.requestedMaxReferencesPerNode = requestedMaxReferencesPerNode;
+          try {
+            return session.browse(nativeDescription) as Promise<InspectionBrowseResult>;
+          } finally {
+            session.requestedMaxReferencesPerNode = previousMaximum;
+          }
+        },
+        browseNextForInspection: (continuationPoints, release) =>
+          session.browseNext(
+            continuationPoints.map((point) => Buffer.from(point)),
+            release,
+          ) as Promise<InspectionBrowseResult | InspectionBrowseResult[]>,
+        readBatch: (descriptions) => session.read(descriptions) as Promise<InspectionDataValue[]>,
+      };
+    },
   };
 }
 
