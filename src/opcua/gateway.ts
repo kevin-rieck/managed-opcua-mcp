@@ -52,13 +52,23 @@ export interface NodeMetadataResult {
   };
 }
 
-export interface OpcUaGateway {
+export interface OpcUaConnectionCapability {
   status(): Promise<OpcUaStatus>;
   connect(): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface OpcUaLegacyReadCapability {
   browse(nodeId: string, depth: number): Promise<BrowseNodeResult[]>;
   read(nodeId: string): Promise<ReadValueResult>;
   readMany(nodeIds: string[]): Promise<ReadValueResult[]>;
-  write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult>;
   getNodeMetadata?(nodeId: string): Promise<NodeMetadataResult>;
 }
+
+export interface OpcUaControlCapability {
+  write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult>;
+}
+
+/** Compatibility composite for existing MCP and Control Surface consumers. */
+export interface OpcUaGateway
+  extends OpcUaConnectionCapability, OpcUaLegacyReadCapability, OpcUaControlCapability {}

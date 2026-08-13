@@ -257,6 +257,49 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     });
   });
 
+  it('exposes production inspection access through a separate read-only batch capability', async () => {
+    const readBatch = vi.fn(() =>
+      Promise.resolve([
+        { value: { dataType: 11, value: 10 }, statusCode: { name: 'Good' } },
+        { value: { dataType: 11, value: 11 }, statusCode: { name: 'Good' } },
+      ]),
+    );
+    const session = {
+      close: () => Promise.resolve(),
+      browseForInspection: vi.fn(() => Promise.resolve({ statusCode: { name: 'Good' } })),
+      browseNextForInspection: vi.fn(() => Promise.resolve({ statusCode: { name: 'Good' } })),
+      readBatch,
+      write: vi.fn(() => Promise.resolve({ toString: () => 'Good' })),
+    };
+    const gateway = new NodeOpcUaGateway({
+      connection: anonymousConnection,
+      clientFactory: () => resolvedClient(session),
+    });
+
+    await gateway.connect();
+    await flushPromises();
+    const adapter = gateway.readOnlyProtocol();
+    const lease = await adapter.acquireSession();
+
+    expect('write' in adapter).toBe(false);
+    expect('write' in lease).toBe(false);
+    await expect(
+      lease.read([
+        { nodeId: 'ns=2;s=A', attributeId: 13 },
+        { nodeId: 'ns=2;s=B', attributeId: 13 },
+      ]),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: [{ value: 10 }, { value: 11 }],
+    });
+    expect(readBatch).toHaveBeenCalledTimes(1);
+
+    await gateway.close();
+    expect(() => lease.assertGeneration()).toThrowError(
+      'The OPC UA connection changed during the operation.',
+    );
+  });
+
   it('writes values through connected sessions', async () => {
     const session = {
       close: () => Promise.resolve(),
