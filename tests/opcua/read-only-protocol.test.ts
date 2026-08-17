@@ -238,6 +238,27 @@ describe('NodeOpcUaReadOnlyAdapter', () => {
     ]);
   });
 
+  it('retains partial Server operation-limit statuses when values are unavailable', async () => {
+    const readBatch = vi.fn(() =>
+      Promise.resolve([
+        { statusCode: { name: 'BadUserAccessDenied' } },
+        { statusCode: { name: 'BadNodeIdUnknown' } },
+      ]),
+    );
+    const adapter = new NodeOpcUaReadOnlyAdapter(connectedSource({ readBatch }));
+    const lease = await adapter.acquireSession();
+
+    await expect(lease.readOperationLimits()).resolves.toEqual({
+      ok: true,
+      value: {
+        statusCodes: {
+          maxNodesPerRead: 'BadUserAccessDenied',
+          maxNodesPerBrowse: 'BadNodeIdUnknown',
+        },
+      },
+    });
+  });
+
   it('fails a whole generation-fenced operation when the connection changes', async () => {
     let generation = 4;
     const adapter = new NodeOpcUaReadOnlyAdapter(

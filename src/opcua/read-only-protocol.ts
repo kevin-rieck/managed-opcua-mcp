@@ -94,6 +94,11 @@ export interface ProtocolBrowsePage {
 export interface ProtocolOperationLimits {
   maxNodesPerRead?: number;
   maxNodesPerBrowse?: number;
+  /** StatusCodes for limit reads that did not produce a usable value. */
+  statusCodes?: {
+    maxNodesPerRead?: string;
+    maxNodesPerBrowse?: string;
+  };
 }
 
 export interface ReadOnlyOpcUaSessionLease {
@@ -343,6 +348,13 @@ class NodeOpcUaSessionLease implements ReadOnlyOpcUaSessionLease {
     const maxNodesPerBrowse = positiveInteger(result.value[1]);
     if (maxNodesPerRead !== undefined) limits.maxNodesPerRead = maxNodesPerRead;
     if (maxNodesPerBrowse !== undefined) limits.maxNodesPerBrowse = maxNodesPerBrowse;
+
+    const statusCodes: NonNullable<ProtocolOperationLimits['statusCodes']> = {};
+    const readStatus = result.value[0]?.statusCode;
+    const browseStatus = result.value[1]?.statusCode;
+    if (isNonGoodStatus(readStatus)) statusCodes.maxNodesPerRead = readStatus;
+    if (isNonGoodStatus(browseStatus)) statusCodes.maxNodesPerBrowse = browseStatus;
+    if (Object.keys(statusCodes).length > 0) limits.statusCodes = statusCodes;
     return { ok: true, value: limits };
   }
 
@@ -821,6 +833,10 @@ function positiveInteger(value: ProtocolDataValue | undefined): number | undefin
   return value?.quality !== 'bad' && Number.isSafeInteger(candidate) && Number(candidate) > 0
     ? Number(candidate)
     : undefined;
+}
+
+function isNonGoodStatus(statusCode: string | undefined): statusCode is string {
+  return statusCode !== undefined && statusCode !== 'Unknown' && !statusCode.startsWith('Good');
 }
 
 function hasStringProperty<K extends string>(value: object, key: K): value is Record<K, string> {
