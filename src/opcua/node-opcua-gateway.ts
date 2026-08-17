@@ -565,6 +565,7 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
               password: userIdentity.password,
             },
       );
+      let browseLimitQueue: Promise<void> = Promise.resolve();
       return {
         close: () => session.close(),
         browse: (description) => session.browse(description) as Promise<OpcUaBrowseResponse>,
@@ -573,14 +574,21 @@ function createNodeOpcUaClient(options: NodeOpcUaClientFactoryOptions): OpcUaCli
         read: (description) => session.read(description) as Promise<OpcUaDataValueLike>,
         write: (description) => session.write(description),
         browseForInspection: (description) => {
-          const { requestedMaxReferencesPerNode, ...nativeDescription } = description;
-          const previousMaximum = session.requestedMaxReferencesPerNode;
-          session.requestedMaxReferencesPerNode = requestedMaxReferencesPerNode;
-          try {
-            return session.browse(nativeDescription) as Promise<InspectionBrowseResult>;
-          } finally {
-            session.requestedMaxReferencesPerNode = previousMaximum;
-          }
+          const operation = browseLimitQueue.then(async () => {
+            const { requestedMaxReferencesPerNode, ...nativeDescription } = description;
+            const previousMaximum = session.requestedMaxReferencesPerNode;
+            session.requestedMaxReferencesPerNode = requestedMaxReferencesPerNode;
+            try {
+              return (await session.browse(nativeDescription)) as InspectionBrowseResult;
+            } finally {
+              session.requestedMaxReferencesPerNode = previousMaximum;
+            }
+          });
+          browseLimitQueue = operation.then(
+            () => undefined,
+            () => undefined,
+          );
+          return operation;
         },
         browseNextForInspection: (continuationPoints, release) =>
           session.browseNext(

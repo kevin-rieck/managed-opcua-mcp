@@ -1,9 +1,14 @@
 export type OpcUaProtocolErrorCode =
   | 'connection_changed'
+  | 'invalid_continuation'
+  | 'invalid_request'
+  | 'node_not_found'
   | 'opcua_access_denied'
   | 'opcua_operation_failed'
   | 'operation_cancelled'
-  | 'operation_timeout';
+  | 'operation_timeout'
+  | 'server_busy'
+  | 'unsupported_operation';
 
 export class OpcUaProtocolError extends Error {
   readonly code: OpcUaProtocolErrorCode;
@@ -386,8 +391,11 @@ class NodeOpcUaSessionLease implements ReadOnlyOpcUaSessionLease {
     try {
       return await awaitNativeOperation(native, context, onLateResult, onLateFailure);
     } catch (error) {
-      if (error instanceof OpcUaProtocolError && error.code === 'opcua_operation_failed') {
-        this.assertGeneration();
+      if (this.source.currentGeneration() !== this.connectionGeneration) {
+        throw new OpcUaProtocolError(
+          'connection_changed',
+          'The OPC UA connection changed during the operation.',
+        );
       }
       throw error;
     }
@@ -437,6 +445,13 @@ export async function runGenerationFenced<T>(
     const result = await operation(lease);
     lease.assertGeneration();
     return result;
+  } catch (error) {
+    try {
+      lease.assertGeneration();
+    } catch (generationError) {
+      if (isConnectionChangedError(generationError)) throw generationError;
+    }
+    throw error;
   } finally {
     lease.release();
   }
@@ -514,10 +529,8 @@ function assertContextActive(context: ProtocolOperationContext): void {
 function startNative<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return operation();
-  } catch {
-    return Promise.reject(
-      new OpcUaProtocolError('opcua_operation_failed', 'The OPC UA operation failed.'),
-    );
+  } catch (error) {
+    return Promise.reject(protocolErrorFromNative(error));
   }
 }
 
@@ -525,7 +538,7 @@ function awaitNativeOperation<T>(
   native: Promise<T>,
   context: ProtocolOperationContext,
   onLateResult?: (result: T) => void,
-  onLateFailure?: () => void,
+  onLateFailure?: (error: unknown) => void,
 ): Promise<T> {
   assertContextActive(context);
   return new Promise<T>((resolve, reject) => {
@@ -566,14 +579,12 @@ function awaitNativeOperation<T>(
         }
         finish(() => resolve(result));
       },
-      () => {
+      (error: unknown) => {
         if (terminal) {
-          onLateFailure?.();
+          onLateFailure?.(error);
           return;
         }
-        finish(() =>
-          reject(new OpcUaProtocolError('opcua_operation_failed', 'The OPC UA operation failed.')),
-        );
+        finish(() => reject(protocolErrorFromNative(error)));
       },
     );
   });
@@ -632,13 +643,93 @@ function mapDataValue(dataValue: NodeOpcUaDataValue): ProtocolDataValue {
 }
 
 function protocolFailure(statusCode: string): ProtocolFailure {
-  const denied = statusCode.includes('AccessDenied') || statusCode.includes('UserAccessDenied');
-  const error: ProtocolFailure['error'] = {
-    code: denied ? 'opcua_access_denied' : 'opcua_operation_failed',
-    message: denied ? 'The OPC UA Server denied the operation.' : 'The OPC UA operation failed.',
+  const error = protocolErrorForStatus(statusCode);
+  return {
+    ok: false,
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(error.statusCode !== undefined ? { statusCode: error.statusCode } : {}),
+    },
   };
-  if (statusCode !== 'Unknown') error.statusCode = statusCode;
-  return { ok: false, error };
+}
+
+function protocolErrorFromNative(error: unknown): OpcUaProtocolError {
+  if (error instanceof OpcUaProtocolError) return error;
+  const statusCode = nativeStatusCode(error);
+  const mapped = protocolErrorForStatus(statusCode ?? 'Unknown');
+  return new OpcUaProtocolError(mapped.code, mapped.message, mapped.statusCode);
+}
+
+function protocolErrorForStatus(statusCode: string): OpcUaProtocolError {
+  const code = protocolErrorCodeForStatus(statusCode);
+  const message = protocolErrorMessage(code);
+  return new OpcUaProtocolError(code, message, statusCode === 'Unknown' ? undefined : statusCode);
+}
+
+function protocolErrorCodeForStatus(statusCode: string): OpcUaProtocolErrorCode {
+  if (statusCode.includes('AccessDenied')) return 'opcua_access_denied';
+  if (
+    statusCode.includes('ContinuationPointInvalid') ||
+    statusCode.includes('NoContinuationPoints')
+  ) {
+    return 'invalid_continuation';
+  }
+  if (statusCode.includes('NodeIdUnknown') || statusCode.includes('NodeIdInvalid')) {
+    return 'node_not_found';
+  }
+  if (
+    statusCode.includes('TooManyOperations') ||
+    statusCode.includes('ServerTooBusy') ||
+    statusCode.includes('ServerBusy')
+  ) {
+    return 'server_busy';
+  }
+  if (statusCode.includes('Unsupported')) return 'unsupported_operation';
+  if (statusCode.includes('Timeout')) return 'operation_timeout';
+  return 'opcua_operation_failed';
+}
+
+function protocolErrorMessage(code: OpcUaProtocolErrorCode): string {
+  switch (code) {
+    case 'opcua_access_denied':
+      return 'The OPC UA Server denied the operation.';
+    case 'invalid_continuation':
+      return 'The OPC UA continuation point is invalid.';
+    case 'node_not_found':
+      return 'The OPC UA Node was not found.';
+    case 'server_busy':
+      return 'The OPC UA Server is busy.';
+    case 'unsupported_operation':
+      return 'The OPC UA operation is unsupported.';
+    case 'operation_timeout':
+      return 'The OPC UA operation timed out.';
+    case 'connection_changed':
+      return 'The OPC UA connection changed during the operation.';
+    case 'operation_cancelled':
+      return 'The OPC UA operation was cancelled.';
+    case 'invalid_request':
+      return 'The OPC UA operation request is invalid.';
+    case 'opcua_operation_failed':
+      return 'The OPC UA operation failed.';
+  }
+}
+
+function nativeStatusCode(error: unknown): string | undefined {
+  if (!isObject(error)) return undefined;
+  const statusCode = error['statusCode'];
+  if (statusCode !== undefined) return stringifyStatus(statusCode);
+  const code = error['code'];
+  if (typeof code === 'string' && /^(?:Bad|Good|Uncertain)/u.test(code)) return code;
+  return undefined;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isConnectionChangedError(error: unknown): boolean {
+  return isObject(error) && error['code'] === 'connection_changed';
 }
 
 function classifyStatus(statusCode: string): ProtocolQuality {

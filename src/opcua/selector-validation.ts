@@ -37,19 +37,23 @@ const MAX_NODE_ID_SCALARS = 4_096;
 let nodeOpcUa: NodeOpcUaNodeIdModule | undefined;
 
 export function validateNodeSelector(
-  selector: NodeSelector,
+  selector: unknown,
   parseNodeId: NodeIdParser = parseCanonicalNodeId,
   resolveLabel?: (label: string) => string | undefined,
 ): SelectorValidation {
-  const input = selector as { nodeId?: string; label?: string };
-  const hasNodeId = typeof input.nodeId === 'string';
-  const hasLabel = typeof input.label === 'string';
+  if (!isRecord(selector)) return invalidSelector('A selector must be an object.');
+
+  const hasNodeId = 'nodeId' in selector && selector['nodeId'] !== undefined;
+  const hasLabel = 'label' in selector && selector['label'] !== undefined;
   if (hasNodeId === hasLabel) {
     return invalidSelector('A selector must contain exactly one of nodeId or label.');
   }
 
   if (hasLabel) {
-    const label = input.label?.trim() ?? '';
+    if (typeof selector['label'] !== 'string') {
+      return invalidSelector('The selector label must be a string.');
+    }
+    const label = selector['label'].trim();
     if (label.length === 0) return invalidSelector('The selector label must not be empty.');
     if (resolveLabel === undefined) {
       return invalidSelector('A Read Entry Point label resolver is required for label selectors.');
@@ -60,12 +64,14 @@ export function validateNodeSelector(
     }
     const validation = validateNodeId(resolvedNodeId, parseNodeId);
     if (!validation.ok) return validation;
-    return { ...validation, selector, resolvedFromLabel: label };
+    return { ...validation, selector: selector as NodeSelector, resolvedFromLabel: label };
   }
 
-  const nodeId = input.nodeId ?? '';
-  const validation = validateNodeId(nodeId, parseNodeId);
-  return validation.ok ? { ...validation, selector } : validation;
+  if (typeof selector['nodeId'] !== 'string') {
+    return invalidSelector('The selector NodeId must be a string.');
+  }
+  const validation = validateNodeId(selector['nodeId'], parseNodeId);
+  return validation.ok ? { ...validation, selector: selector as NodeSelector } : validation;
 }
 
 export function validateNodeSelectorBatch(
@@ -116,13 +122,25 @@ function validateNodeId(nodeId: string, parseNodeId: NodeIdParser): SelectorVali
 }
 
 function isNodeIdText(value: string): boolean {
-  const identifier = value.replace(/^ns=\d+;/u, '');
+  const namespace = /^ns=(\d+);/u.exec(value);
+  if (namespace !== null) {
+    const namespaceIndex = Number(namespace[1]);
+    if (!Number.isSafeInteger(namespaceIndex) || namespaceIndex > 65_535) return false;
+  }
+  const identifier = namespace === null ? value : value.slice(namespace[0].length);
+  if (/^i=\d+$/u.test(identifier)) {
+    const numericIdentifier = Number(identifier.slice(2));
+    return Number.isSafeInteger(numericIdentifier) && numericIdentifier <= 4_294_967_295;
+  }
   return (
-    /^i=\d+$/u.test(identifier) ||
     /^s=.*$/su.test(identifier) ||
     /^g=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(identifier) ||
     /^b=(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(identifier)
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function parseCanonicalNodeId(value: string): string {

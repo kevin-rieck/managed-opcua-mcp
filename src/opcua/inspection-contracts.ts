@@ -191,7 +191,7 @@ export interface InspectFields {
   enumValues: FieldOutcome<EnumValue[]>;
 }
 
-export interface InspectItem {
+export interface InspectEntry {
   index: number;
   selector: NodeSelector;
   state: ItemState;
@@ -201,7 +201,7 @@ export interface InspectItem {
 }
 
 export interface InspectSuccess extends LiveResult {
-  items: InspectItem[];
+  items: InspectEntry[];
 }
 
 export type InspectResult = InspectSuccess | InspectionFailure;
@@ -255,7 +255,7 @@ export type OpcUaJsonValue = OpcUaJsonScalar | OpcUaJsonScalar[];
 export type ValueConversionOutcome =
   { state: 'converted' } | { state: 'failed' | 'unsupported'; code: string; message: string };
 
-export interface ReadValueItem {
+export interface ReadValueEntry {
   index: number;
   selector: NodeSelector;
   state: 'success' | 'partial';
@@ -271,7 +271,7 @@ export interface ReadValueItem {
   error?: InspectionError;
 }
 
-export interface FailedReadItem {
+export interface FailedReadEntry {
   index: number;
   selector: NodeSelector;
   state: 'failed';
@@ -280,10 +280,10 @@ export interface FailedReadItem {
   statusCode?: string;
 }
 
-export type ReadItem = ReadValueItem | FailedReadItem;
+export type ReadEntry = ReadValueEntry | FailedReadEntry;
 
 export interface ReadSuccess extends LiveResult {
-  items: ReadItem[];
+  items: ReadEntry[];
 }
 
 export type ReadResult = ReadSuccess | InspectionFailure;

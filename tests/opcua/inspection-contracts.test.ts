@@ -124,6 +124,22 @@ describe('Node selector validation', () => {
     expect(parser).toHaveBeenCalledWith('ns=2;s= Machine ');
   });
 
+  it('rejects malformed conflicting selector members before label resolution', () => {
+    expect(
+      validateNodeSelector(
+        { nodeId: 42, label: 'Boiler' },
+        (value) => value,
+        () => 'i=1',
+      ),
+    ).toEqual({
+      ok: false,
+      error: {
+        code: 'invalid_selector',
+        message: 'A selector must contain exactly one of nodeId or label.',
+      },
+    });
+  });
+
   it('correlates malformed and conflicting selectors while retaining valid selectors', () => {
     const parser = (value: string): string => {
       if (value === 'bad') throw new Error('native parser detail');

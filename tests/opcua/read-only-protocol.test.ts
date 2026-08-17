@@ -82,6 +82,46 @@ describe('NodeOpcUaReadOnlyAdapter', () => {
     });
   });
 
+  it('retains an OPC UA status from a rejected native call without exposing SDK text', async () => {
+    const readBatch = vi.fn(() =>
+      Promise.reject(
+        Object.assign(new Error('secret endpoint and stack details'), {
+          statusCode: { name: 'BadUserAccessDenied' },
+        }),
+      ),
+    );
+    const adapter = new NodeOpcUaReadOnlyAdapter(connectedSource({ readBatch }));
+    const lease = await adapter.acquireSession();
+
+    await expect(lease.read([{ nodeId: 'i=1', attributeId: 13 }])).rejects.toEqual(
+      new OpcUaProtocolError(
+        'opcua_access_denied',
+        'The OPC UA Server denied the operation.',
+        'BadUserAccessDenied',
+      ),
+    );
+  });
+
+  it('classifies an invalid native continuation as invalid_continuation', async () => {
+    const adapter = new NodeOpcUaReadOnlyAdapter(
+      connectedSource({
+        browseNext: vi.fn(() =>
+          Promise.resolve({ statusCode: { name: 'BadContinuationPointInvalid' }, references: [] }),
+        ),
+      }),
+    );
+    const lease = await adapter.acquireSession();
+
+    await expect(lease.browseNext(new Uint8Array([1]))).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'invalid_continuation',
+        message: 'The OPC UA continuation point is invalid.',
+        statusCode: 'BadContinuationPointInvalid',
+      },
+    });
+  });
+
   it('maps Browse status and native continuation points to canonical outcomes', async () => {
     const continuationPoint = new Uint8Array([1, 2, 3]);
     const browse = vi.fn(() =>
@@ -209,6 +249,20 @@ describe('NodeOpcUaReadOnlyAdapter', () => {
         expect(lease.connectionGeneration).toBe(4);
         generation = 5;
         return Promise.resolve('late data');
+      }),
+    ).rejects.toMatchObject({ code: 'connection_changed' });
+  });
+
+  it('does not return an operation error from a stale generation', async () => {
+    let generation = 4;
+    const adapter = new NodeOpcUaReadOnlyAdapter(
+      connectedSource({ readBatch: vi.fn(() => Promise.resolve([])) }, () => generation),
+    );
+
+    await expect(
+      runGenerationFenced(adapter, () => {
+        generation = 5;
+        throw new Error('stale session failure');
       }),
     ).rejects.toMatchObject({ code: 'connection_changed' });
   });
