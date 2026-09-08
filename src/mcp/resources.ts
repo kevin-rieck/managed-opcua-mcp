@@ -46,7 +46,7 @@ export function buildConfigSummaryResource(config: AppConfig, configHash: string
 }
 
 export function buildReadEntryPointsResource(config: AppConfig): Record<string, unknown> {
-  return config.read;
+  return { roots: config.read.roots };
 }
 
 export function jsonResource(uri: string, value: unknown) {
@@ -55,7 +55,7 @@ export function jsonResource(uri: string, value: unknown) {
       {
         uri,
         mimeType: 'application/json',
-        text: JSON.stringify(value, null, 2),
+        text: JSON.stringify(value),
       },
     ],
   };

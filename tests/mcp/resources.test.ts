@@ -100,11 +100,8 @@ describe('MCP metadata resources', () => {
         configHash: 'abc123',
       });
       expect(configSummary).not.toHaveProperty('server');
-      expect(readEntryPoints).toMatchObject({
-        defaultBrowseDepth: 2,
-        maxBrowseDepth: 5,
-        maxReadBatchSize: 25,
-        roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine' }],
+      expect(readEntryPoints).toEqual({
+        roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.' }],
       });
     } finally {
       await client.close();

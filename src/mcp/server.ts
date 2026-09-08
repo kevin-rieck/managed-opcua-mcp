@@ -7,7 +7,7 @@ import type { AuditSink } from '../audit/audit-sink.js';
 import { appendControlAuditRecord, requireHealthyAudit } from '../audit/control-audit.js';
 import type { ControlItem } from '../config/schema.js';
 import { normalizeControlValue } from '../control/value-normalization.js';
-import { getReadEntryPoints, resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
+import { resolveReadEntryPointLabel } from '../policy/read-entry-points.js';
 import { requireConnectedOpcUa } from './live-opcua-preflight.js';
 import {
   getOnlineValidation,
@@ -15,7 +15,10 @@ import {
   type OnlineValidationCache,
   type OnlineValidationResult,
 } from './online-validation.js';
-import type { BrowseNodeResult, OpcUaGateway, ReadValueResult } from '../opcua/gateway.js';
+import type { OpcUaGateway } from '../opcua/gateway.js';
+import { createOpcUaInspectionModule, type OpcUaInspectionService } from '../opcua/inspection-module.js';
+import type { NodeSelector, OpcUaInspectionModule } from '../opcua/inspection-contracts.js';
+import type { ReadOnlyOpcUaProtocolAdapter } from '../opcua/read-only-protocol.js';
 import {
   buildConfigSummaryResource,
   buildReadEntryPointsResource,
@@ -28,6 +31,8 @@ export interface McpServerDependencies {
   configHash: string;
   gateway: OpcUaGateway;
   auditSink: AuditSink;
+  /** Optional native read-only module supplied by the connection integration. */
+  inspection?: OpcUaInspectionModule;
 }
 
 export function createMcpServer(dependencies: McpServerDependencies): McpServer {
@@ -37,6 +42,8 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
     confirmationTokens: new Map(),
   };
   const onlineValidationCache: OnlineValidationCache = {};
+  const inspection =
+    dependencies.inspection ?? createInspectionFromGateway(dependencies.gateway, dependencies.config);
 
   server.registerResource(
     'status',
@@ -85,14 +92,26 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
   );
 
   server.registerResource(
-    'read_scope',
-    'opcua://read-scope',
+    'model_context',
+    'opcua://model-context',
     {
-      title: 'OPC UA MCP Server read scope',
-      description: 'Compatibility alias for configured Read Entry Points.',
+      title: 'OPC UA model context',
+      description: 'Live namespace qualification and best-effort NamespaceMetadata context.',
       mimeType: 'application/json',
     },
-    () => jsonResource('opcua://read-scope', buildReadEntryPointsResource(dependencies.config)),
+    async () =>
+      jsonResource(
+        'opcua://model-context',
+        inspection === undefined
+          ? {
+              ok: false,
+              error: {
+                code: 'opcua_operation_failed',
+                message: 'The read-only OPC UA inspection module is unavailable.',
+              },
+            }
+          : await inspection.modelContext(),
+      ),
   );
 
   if ((dependencies.config.controls?.items.length ?? 0) > 0) {
@@ -165,30 +184,48 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
     'browse_node',
     {
       title: 'Browse OPC UA Node',
-      description:
-        'Browse OPC UA structure from a NodeId or configured Read Entry Point label. With no identifier, returns configured Read Entry Points.',
+      description: 'Browse qualified OPC UA references from a NodeId or Read Entry Point label.',
       inputSchema: {
         nodeId: z.string().min(1).optional(),
         label: z.string().min(1).optional(),
+        continuation: z.string().min(1).optional(),
+        direction: z.enum(['forward', 'inverse', 'both']).optional(),
+        referenceScope: z.enum(['hierarchical', 'all']).optional(),
+        targetNodeClasses: z
+          .array(z.enum(['Object', 'Variable', 'Method', 'ObjectType', 'VariableType', 'ReferenceType', 'DataType', 'View']))
+          .optional(),
         depth: z.number().int().min(0).optional(),
+        pageSize: z.number().int().min(1).optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ nodeId, label, depth }) => {
-      const args: BrowseNodeArgs = {};
-      if (nodeId !== undefined) args.nodeId = nodeId;
-      if (label !== undefined) args.label = label;
-      if (depth !== undefined) args.depth = depth;
-      const body = await browseNodeTool(dependencies, args);
-      return toolJson(body);
+    async ({ nodeId, label, continuation, direction, referenceScope, targetNodeClasses, depth, pageSize }) => {
+      if (inspection === undefined) return toolJson(inspectionUnavailable());
+      if (continuation !== undefined) {
+        if (nodeId !== undefined || label !== undefined || direction !== undefined || referenceScope !== undefined || targetNodeClasses !== undefined || depth !== undefined || pageSize !== undefined)
+          return toolJson({ ok: false, error: { code: 'invalid_request', message: 'A continuation request accepts only continuation.' } });
+        return toolJson(await inspection.browse({ continuation }));
+      }
+      if (nodeId === undefined && label === undefined)
+        return toolJson({ ok: false, error: { code: 'invalid_request', message: 'Provide a NodeId or Read Entry Point label.' } });
+      return toolJson(
+        await inspection.browse({
+          selector: nodeSelector(nodeId, label),
+          ...(direction === undefined ? {} : { direction }),
+          ...(referenceScope === undefined ? {} : { referenceScope }),
+          ...(targetNodeClasses === undefined ? {} : { targetNodeClasses }),
+          ...(depth === undefined ? {} : { depth }),
+          ...(pageSize === undefined ? {} : { pageSize }),
+        }),
+      );
     },
   );
 
   server.registerTool(
-    'read_node',
+    'inspect_node',
     {
-      title: 'Read OPC UA Node',
-      description: 'Read one OPC UA Node by NodeId or configured label.',
+      title: 'Inspect OPC UA Node',
+      description: 'Inspect qualified identity and fixed OPC UA metadata for one Node.',
       inputSchema: {
         nodeId: z.string().min(1).optional(),
         label: z.string().min(1).optional(),
@@ -196,11 +233,41 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ nodeId, label }) => {
-      const args: ReadNodeIdentifier = {};
-      if (nodeId !== undefined) args.nodeId = nodeId;
-      if (label !== undefined) args.label = label;
-      const body = await readNodeTool(dependencies, args);
-      return toolJson(body);
+      if (inspection === undefined) return toolJson(inspectionUnavailable());
+      return toolJson(await inspection.inspect({ selector: nodeSelector(nodeId, label) }));
+    },
+  );
+
+  server.registerTool(
+    'inspect_nodes',
+    {
+      title: 'Inspect OPC UA Nodes',
+      description: 'Inspect qualified identity and fixed OPC UA metadata for Nodes.',
+      inputSchema: {
+        selectors: z.array(z.object({ nodeId: z.string().min(1).optional(), label: z.string().min(1).optional() })).min(1),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ selectors }) => {
+      if (inspection === undefined) return toolJson(inspectionUnavailable());
+      return toolJson(await inspection.inspect({ selectors: selectors.map(({ nodeId, label }) => nodeSelector(nodeId, label)) }));
+    },
+  );
+
+  server.registerTool(
+    'read_node',
+    {
+      title: 'Read OPC UA Node',
+      description: 'Read one OPC UA Node by NodeId or Read Entry Point label.',
+      inputSchema: {
+        nodeId: z.string().min(1).optional(),
+        label: z.string().min(1).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ nodeId, label }) => {
+      if (inspection === undefined) return toolJson(inspectionUnavailable());
+      return toolJson(await inspection.read({ selector: nodeSelector(nodeId, label) }));
     },
   );
 
@@ -208,44 +275,19 @@ export function createMcpServer(dependencies: McpServerDependencies): McpServer 
     'read_nodes',
     {
       title: 'Read OPC UA Nodes',
-      description: 'Read a bounded batch of OPC UA Nodes by NodeId or configured label.',
+      description: 'Read current values for a bounded batch of OPC UA Nodes.',
       inputSchema: {
-        identifiers: z
-          .array(
-            z.object({ nodeId: z.string().min(1).optional(), label: z.string().min(1).optional() }),
-          )
-          .min(1),
+        selectors: z.array(z.object({ nodeId: z.string().min(1).optional(), label: z.string().min(1).optional() })).min(1),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ identifiers }) => {
-      const readIdentifiers = identifiers.map((identifier) => {
-        const readIdentifier: ReadNodeIdentifier = {};
-        if (identifier.nodeId !== undefined) readIdentifier.nodeId = identifier.nodeId;
-        if (identifier.label !== undefined) readIdentifier.label = identifier.label;
-        return readIdentifier;
-      });
-      const body = await readNodesTool(dependencies, { identifiers: readIdentifiers });
-      return toolJson(body);
+    async ({ selectors }) => {
+      if (inspection === undefined) return toolJson(inspectionUnavailable());
+      return toolJson(await inspection.read({ selectors: selectors.map(({ nodeId, label }) => nodeSelector(nodeId, label)) }));
     },
   );
 
   return server;
-}
-
-interface BrowseNodeArgs {
-  nodeId?: string;
-  label?: string;
-  depth?: number;
-}
-
-interface ReadNodeIdentifier {
-  nodeId?: string;
-  label?: string;
-}
-
-interface ReadNodesArgs {
-  identifiers: ReadNodeIdentifier[];
 }
 
 interface WriteControlArgs {
@@ -273,20 +315,6 @@ interface ConfirmationToken {
   expiresAt: number;
   observedCurrentRawValue?: unknown;
 }
-
-interface ResolvedReadIdentifier {
-  nodeId: string;
-  label?: string;
-  control?: ControlItem;
-}
-
-interface ReadResolutionError extends Record<string, unknown> {
-  ok: false;
-  code: string;
-  message: string;
-}
-
-type ReadResolution = ResolvedReadIdentifier | ReadResolutionError;
 
 async function listControlsTool(
   dependencies: McpServerDependencies,
@@ -933,229 +961,6 @@ function buildControlValueMetadata(control: ControlItem): Record<string, unknown
   };
 }
 
-async function browseNodeTool(
-  dependencies: McpServerDependencies,
-  args: BrowseNodeArgs,
-): Promise<Record<string, unknown>> {
-  if (args.nodeId === undefined && args.label === undefined) {
-    return { ok: true, mode: 'read_entry_points', roots: getReadEntryPoints(dependencies.config) };
-  }
-
-  if (args.nodeId !== undefined && args.label !== undefined) {
-    return {
-      ok: false,
-      code: 'ambiguous_identifier',
-      message: 'Provide either nodeId or label, not both.',
-    };
-  }
-
-  if (args.label !== undefined) {
-    const nodeId = resolveReadEntryPointLabel(dependencies.config, args.label);
-    if (nodeId === undefined)
-      return {
-        ok: false,
-        code: 'unknown_read_entry_point',
-        message: `Unknown Read Entry Point label: ${args.label}`,
-      };
-    const depth = resolveBrowseDepth(dependencies.config, args.depth);
-    return browseFromNodeId(dependencies.gateway, nodeId, depth, { nodeId, label: args.label });
-  }
-
-  const nodeId = args.nodeId;
-  if (nodeId !== undefined) {
-    const depth = resolveBrowseDepth(dependencies.config, args.depth);
-    return browseFromNodeId(dependencies.gateway, nodeId, depth, { nodeId });
-  }
-
-  return { ok: false, code: 'not_implemented' };
-}
-
-async function browseFromNodeId(
-  gateway: OpcUaGateway,
-  nodeId: string,
-  depth: number,
-  start: Record<string, string>,
-): Promise<Record<string, unknown>> {
-  try {
-    const preflight = await requireConnectedOpcUa(gateway);
-    if (!preflight.ok) return preflight.response;
-
-    const nodes = sanitizeBrowseResults(await gateway.browse(nodeId, depth));
-    return { ok: true, mode: 'browse', start, depth, nodes };
-  } catch (error) {
-    return { ok: false, ...sanitizeToolError(error, 'opcua_browse_failed') };
-  }
-}
-
-async function readNodeTool(
-  dependencies: McpServerDependencies,
-  identifier: ReadNodeIdentifier,
-): Promise<Record<string, unknown>> {
-  const results = await readNodesTool(dependencies, { identifiers: [identifier] });
-  const maybeResults = results['results'];
-  if (Array.isArray(maybeResults)) {
-    const result = maybeResults[0] as unknown;
-    if (isRecord(result) && result['ok'] === false) return result;
-    return { ok: results['ok'], result };
-  }
-  return results;
-}
-
-async function readNodesTool(
-  dependencies: McpServerDependencies,
-  args: ReadNodesArgs,
-): Promise<Record<string, unknown>> {
-  if (args.identifiers.length > dependencies.config.read.maxReadBatchSize) {
-    return {
-      ok: false,
-      code: 'read_batch_too_large',
-      message: `Batch size ${String(args.identifiers.length)} exceeds configured maximum ${String(dependencies.config.read.maxReadBatchSize)}.`,
-    };
-  }
-
-  const resolved = args.identifiers.map((identifier) =>
-    resolveReadIdentifier(dependencies.config, identifier),
-  );
-  const hasResolutionError = resolved.some(isReadResolutionError);
-  const hasLiveRead = resolved.some((identifier) => !isReadResolutionError(identifier));
-  let preflightError: Record<string, unknown> | undefined;
-  if (hasLiveRead) {
-    const preflight = await requireConnectedOpcUa(dependencies.gateway);
-    if (!preflight.ok) {
-      if (!hasResolutionError) return preflight.response;
-      preflightError = preflight.response;
-    }
-  }
-
-  const results = await Promise.all(
-    resolved.map(async (identifier) => {
-      if (isReadResolutionError(identifier)) return identifier;
-      if (preflightError !== undefined) return buildReadPreflightError(identifier, preflightError);
-      return readResolvedNode(dependencies.gateway, identifier);
-    }),
-  );
-
-  return { ok: results.every((result) => result['ok'] === true), results };
-}
-
-function resolveReadIdentifier(config: AppConfig, identifier: ReadNodeIdentifier): ReadResolution {
-  if (identifier.nodeId !== undefined && identifier.label !== undefined) {
-    return {
-      ok: false,
-      code: 'ambiguous_identifier',
-      message: 'Provide either nodeId or label, not both.',
-    };
-  }
-  if (identifier.nodeId === undefined && identifier.label === undefined) {
-    return { ok: false, code: 'missing_identifier', message: 'Provide nodeId or label.' };
-  }
-
-  if (identifier.label !== undefined) {
-    const labelled = findConfiguredReadLabel(config, identifier.label);
-    if (labelled === undefined) {
-      return {
-        ok: false,
-        label: identifier.label,
-        code: 'unknown_read_label',
-        message: `Unknown read label: ${identifier.label}`,
-      };
-    }
-    return labelled;
-  }
-
-  const nodeId = identifier.nodeId;
-  if (nodeId === undefined) {
-    return { ok: false, code: 'missing_identifier', message: 'Provide nodeId or label.' };
-  }
-  const metadata = findReadMetadataByNodeId(config, nodeId);
-  return metadata ?? { nodeId };
-}
-
-async function readResolvedNode(
-  gateway: OpcUaGateway,
-  identifier: ResolvedReadIdentifier,
-): Promise<Record<string, unknown>> {
-  try {
-    const read = await gateway.read(identifier.nodeId);
-    return buildReadSuccess(read, identifier);
-  } catch (error) {
-    return {
-      ok: false,
-      nodeId: identifier.nodeId,
-      ...(identifier.label !== undefined ? { label: identifier.label } : {}),
-      ...sanitizeToolError(error, 'opcua_read_failed'),
-    };
-  }
-}
-
-function buildReadPreflightError(
-  identifier: ResolvedReadIdentifier,
-  preflightError: Record<string, unknown>,
-): Record<string, unknown> {
-  return {
-    ...preflightError,
-    nodeId: identifier.nodeId,
-    ...(identifier.label !== undefined ? { label: identifier.label } : {}),
-  };
-}
-
-function buildReadSuccess(
-  read: ReadValueResult,
-  identifier: ResolvedReadIdentifier,
-): Record<string, unknown> {
-  const normalized = normalizeReadValue(identifier.control, read.value);
-  return {
-    ok: true,
-    nodeId: read.nodeId,
-    ...(identifier.label !== undefined ? { label: identifier.label } : {}),
-    value: normalized.value,
-    ...(normalized.rawValueIncluded ? { rawValue: normalized.rawValue } : {}),
-    ...(read.dataType !== undefined ? { dataType: read.dataType } : {}),
-    ...(identifier.control !== undefined && 'unit' in identifier.control
-      ? { unit: identifier.control.unit }
-      : {}),
-    ...(read.opcuaStatus !== undefined ? { opcuaStatus: read.opcuaStatus } : {}),
-    ...(read.sourceTimestamp !== undefined ? { sourceTimestamp: read.sourceTimestamp } : {}),
-    ...(read.serverTimestamp !== undefined ? { serverTimestamp: read.serverTimestamp } : {}),
-  };
-}
-
-function resolveBrowseDepth(config: AppConfig, requestedDepth: number | undefined): number {
-  return Math.min(requestedDepth ?? config.read.defaultBrowseDepth, config.read.maxBrowseDepth);
-}
-
-function findConfiguredReadLabel(
-  config: AppConfig,
-  label: string,
-): ResolvedReadIdentifier | undefined {
-  const root = config.read.roots.find((candidate) => candidate.label === label);
-  if (root !== undefined) return { nodeId: root.nodeId, label };
-
-  const control = config.controls?.items.find((candidate) => candidate.name === label);
-  if (control !== undefined) return { nodeId: control.nodeId, label: control.name, control };
-  return undefined;
-}
-
-function findReadMetadataByNodeId(
-  config: AppConfig,
-  nodeId: string,
-): ResolvedReadIdentifier | undefined {
-  const root = config.read.roots.find((candidate) => candidate.nodeId === nodeId);
-  if (root?.label !== undefined) return { nodeId, label: root.label };
-
-  const control = config.controls?.items.find((candidate) => candidate.nodeId === nodeId);
-  if (control !== undefined) return { nodeId, label: control.name, control };
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isReadResolutionError(value: ReadResolution): value is ReadResolutionError {
-  return 'ok' in value;
-}
-
 function normalizeReadValue(
   control: ControlItem | undefined,
   value: unknown,
@@ -1177,8 +982,28 @@ function normalizeReadValue(
   return { value, rawValue: value, rawValueIncluded: false };
 }
 
-function toolJson(body: Record<string, unknown>): { content: { type: 'text'; text: string }[] } {
-  return { content: [{ type: 'text', text: JSON.stringify(body, null, 2) }] };
+function toolJson(body: unknown): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text: JSON.stringify(body) }] };
+}
+
+function nodeSelector(nodeId: string | undefined, label: string | undefined): NodeSelector {
+  if (nodeId !== undefined && label !== undefined)
+    return { nodeId, label } as unknown as NodeSelector;
+  if (nodeId === undefined) {
+    if (label === undefined) return {} as NodeSelector;
+    return { label };
+  }
+  return { nodeId };
+}
+
+function inspectionUnavailable(): Record<string, unknown> {
+  return {
+    ok: false,
+    error: {
+      code: 'opcua_operation_failed',
+      message: 'The read-only OPC UA inspection module is unavailable.',
+    },
+  };
 }
 
 function sanitizeToolError(error: unknown, defaultCode: string): { code: string; message: string } {
@@ -1194,18 +1019,57 @@ function sanitizeToolMessage(message: string): string {
   return message.split('\n')[0]?.slice(0, 500) ?? 'OPC UA operation failed.';
 }
 
-function sanitizeBrowseResults(results: BrowseNodeResult[]): BrowseNodeResult[] {
-  return results.map((result) => {
-    const sanitized: BrowseNodeResult = { nodeId: result.nodeId };
-    if (result.browseName !== undefined) sanitized.browseName = result.browseName;
-    if (result.displayName !== undefined) sanitized.displayName = result.displayName;
-    if (result.nodeClass !== undefined) sanitized.nodeClass = result.nodeClass;
-    if (result.dataType !== undefined) sanitized.dataType = result.dataType;
-    if (result.readable !== undefined) sanitized.readable = result.readable;
-    if (result.writable !== undefined) sanitized.writable = result.writable;
-    if (result.callable !== undefined) sanitized.callable = result.callable;
-    return sanitized;
+function createInspectionFromGateway(
+  gateway: OpcUaGateway,
+  config: AppConfig,
+): OpcUaInspectionModule | undefined {
+  const candidate = gateway as OpcUaGateway & {
+    readOnlyProtocol?: () => ReadOnlyOpcUaProtocolAdapter;
+  };
+  const adapter = candidate.readOnlyProtocol?.();
+  if (adapter === undefined) return undefined;
+  const read = config.read;
+  const inspection = createOpcUaInspectionModule(adapter, {
+    resolveLabel: (label) => resolveReadEntryPointLabel(config, label),
+    ...(read.maxResponseBytes === undefined ? {} : { maximumResponseBytes: read.maxResponseBytes }),
+    ...(read.maxInspectionBatchSize === undefined
+      ? {}
+      : { maximumInspectionBatchSize: read.maxInspectionBatchSize }),
+    maximumReadBatchSize: read.maxReadBatchSize,
+    defaultBrowseDepth: read.defaultBrowseDepth,
+    maximumBrowseDepth: read.maxBrowseDepth,
+    ...(read.maxBrowsePageSize === undefined
+      ? {}
+      : { maximumBrowsePageSize: read.maxBrowsePageSize }),
+    ...(read.maxArrayElements === undefined ? {} : { maximumArrayElements: read.maxArrayElements }),
+    ...(read.maxBrowseEdges === undefined ? {} : { maximumBrowseEdges: read.maxBrowseEdges }),
+    ...(read.maxScannedReferences === undefined
+      ? {}
+      : { maximumScannedReferences: read.maxScannedReferences }),
+    ...(read.maxExpandedNodes === undefined
+      ? {}
+      : { maximumExpandedNodes: read.maxExpandedNodes }),
+    ...(read.maxBrowseServiceCalls === undefined
+      ? {}
+      : { maximumBrowseServiceCalls: read.maxBrowseServiceCalls }),
+    ...(read.cursorTtlMs === undefined ? {} : { cursorTtlMs: read.cursorTtlMs }),
+    ...(read.maxActiveCursors === undefined
+      ? {}
+      : { maximumActiveCursors: read.maxActiveCursors }),
+    ...(read.maxConcurrentOperations === undefined
+      ? {}
+      : { maximumConcurrentOperations: read.maxConcurrentOperations }),
+    ...(read.operationDeadlineMs === undefined
+      ? {}
+      : { operationDeadlineMs: read.operationDeadlineMs }),
   });
+  const generationAwareGateway = gateway as OpcUaGateway & {
+    onInspectionGenerationChange?: (listener: () => void) => void;
+  };
+  generationAwareGateway.onInspectionGenerationChange?.(() =>
+    (inspection as OpcUaInspectionService).clearGenerationState(),
+  );
+  return inspection;
 }
 
 export async function startMcpServer(dependencies: McpServerDependencies): Promise<void> {

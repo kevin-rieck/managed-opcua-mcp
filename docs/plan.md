@@ -188,6 +188,7 @@ V1 resources are minimal convenience resources. Parameterized operations and liv
 - `opcua://status`
 - `opcua://config/summary`
 - `opcua://read-entry-points`
+- `opcua://model-context`
 
 `opcua://status` includes connection state, sanitized last error summary, server status if known, last successful health check timestamp, online validation state, control availability counts, `controls.enabled`, audit health, and config hash.
 
@@ -195,52 +196,23 @@ V1 resources are minimal convenience resources. Parameterized operations and liv
 
 `opcua://read-entry-points` includes configured Read Entry Points only. It does not expand the browse tree and does not describe a permission boundary.
 
+`opcua://model-context` returns live namespace mappings and best-effort NamespaceMetadata provenance; it is bounded and has no cursor.
+
 ## MCP Tools
 
-- `browse_node(nodeId?, label?, depth?)`
-- `read_node(nodeId)`
-- `read_nodes(nodes: Array<{nodeId: string}>)`
+- `browse_node(nodeId, label, continuation?, direction?, referenceScope?, targetNodeClasses?, depth?, pageSize?)`
+- `inspect_node(nodeId | label)`
+- `inspect_nodes(selectors: NodeSelector[])`
+- `read_node(nodeId | label)`
+- `read_nodes(selectors: NodeSelector[])`
 - `list_controls()`
 - `write_control(controlName, value, reason?)` for low-risk controls only
 - `prepare_control(controlName, value, reason)` for medium-risk controls
 - `commit_control(token)`
 
-### `browse_node(nodeId?, label?, depth?)`
+`browse_node` requires a NodeId or configured Read Entry Point label. Identifier-less browsing was removed; use `opcua://read-entry-points` to discover starts. Continuations are opaque and query-bound. Browse output is qualified, edge-oriented, and reports `complete` plus incomplete reasons.
 
-If no identifier is supplied, `browse_node` returns configured Read Entry Points when present. If an identifier is supplied, exactly one of `nodeId` or `label` must be provided. Labels resolve only from configured Read Entry Points.
-
-`browse_node` browses forward hierarchical OPC UA references only in v1. The requested browse is attempted with the configured OPC UA credentials; access denial is returned as a structured result.
-
-Browse results include metadata only, not current values. Returned children include node class and capability flags when available.
-
-Example child:
-
-```json
-{
-  "nodeId": "ns=2;s=Machine.State",
-  "browseName": "2:State",
-  "displayName": "State",
-  "nodeClass": "Variable",
-  "dataType": "Int32",
-  "readable": true,
-  "writable": false,
-  "callable": false
-}
-```
-
-### `read_node(nodeId)` and `read_nodes(nodes)`
-
-`read_node` and `read_nodes` accept NodeIds. Reads are attempted with the configured OPC UA credentials. OPC UA access denial and read failures are returned as structured per-node results.
-
-`read_nodes` uses per-node results and supports partial success. It is limited by `read.maxReadBatchSize`, default 50.
-
-Read status values are:
-
-- `succeeded`
-- `rejected`
-- `opcua_error`
-
-Successful read results include NodeId, value, data type where available, OPC UA status code, source timestamp, and server timestamp. If the NodeId corresponds to a Semantic Control target, configured labels/units may be included.
+`inspect_node` and `inspect_nodes` report qualified identity and fixed OPC UA metadata with per-field outcomes. `read_node` and `read_nodes` report qualified identity, quality, timestamps, exact StatusCodes, and independently reported JSON conversion outcomes. Native reads resolve only Read Entry Point labels; Semantic Control names are not read selectors and native values are never normalized using Control Catalog metadata.
 
 ### `list_controls()`
 
