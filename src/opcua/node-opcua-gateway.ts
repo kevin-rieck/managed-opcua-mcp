@@ -168,6 +168,7 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
   private reconnectDelayMs: number;
   private reconnectTimer: Timer | undefined;
   private hasConnected = false;
+  private readonly inspectionGenerationListeners = new Set<() => void>();
   private readonly inspectionAdapter: ReadOnlyOpcUaProtocolAdapter;
 
   constructor(options?: NodeOpcUaGatewayOptions) {
@@ -213,6 +214,11 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
 
   readOnlyProtocol(): ReadOnlyOpcUaProtocolAdapter {
     return this.inspectionAdapter;
+  }
+
+  onInspectionGenerationChange(listener: () => void): () => void {
+    this.inspectionGenerationListeners.add(listener);
+    return () => this.inspectionGenerationListeners.delete(listener);
   }
 
   status(): Promise<OpcUaStatus> {
@@ -385,6 +391,7 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
       this.state = 'connected';
       this.hasConnected = true;
       this.connectionGeneration += 1;
+      this.clearInspectionGenerationState();
       this.lastSuccessfulHealthCheckAt = this.now().toISOString();
       this.lastError = undefined;
       this.reconnectDelayMs = this.initialReconnectDelayMs;
@@ -408,7 +415,12 @@ export class NodeOpcUaGateway implements OpcUaGateway, CommissioningDiscoveryGat
     }, delay);
   }
 
+  private clearInspectionGenerationState(): void {
+    for (const listener of this.inspectionGenerationListeners) listener();
+  }
+
   private async closeSessionAndClient(): Promise<void> {
+    this.clearInspectionGenerationState();
     const session = this.session;
     const client = this.client;
     this.session = undefined;

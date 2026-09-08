@@ -48,6 +48,10 @@ read:
   defaultBrowseDepth: 1
   maxBrowseDepth: 10
   maxReadBatchSize: 50
+  # Optional lower limits for native inspection and browse/read responses.
+  maxInspectionBatchSize: 25
+  maxBrowsePageSize: 100
+  maxResponseBytes: 1048576
   roots:
     - nodeId: ns=2;s=Machine
       label: machine
@@ -57,7 +61,7 @@ read:
 Read Entry Point fields:
 
 - `nodeId`: OPC UA NodeId where an Agent can begin browsing.
-- `label`: optional globally unique snake_case shortcut for `browse_node(label: ...)`.
+- `label`: optional globally unique snake_case selector for browse, inspection, and reads.
 - `description`: Operator-facing context shown to Agents.
 
 Read limits:
@@ -65,6 +69,9 @@ Read limits:
 - `defaultBrowseDepth` bounds default browse traversal.
 - `maxBrowseDepth` caps Agent-requested browse depth.
 - `maxReadBatchSize` caps `read_nodes` batch size.
+- `maxInspectionBatchSize`, `maxBrowsePageSize`, and `maxResponseBytes` lower native inspection limits.
+
+Agents must use `opcua://read-entry-points` to obtain starting Nodes. `opcua://model-context` supplies live namespace mappings and best-effort NamespaceMetadata provenance. `browse_node` requires a NodeId or Read Entry Point label; `inspect_node(s)` and `read_node(s)` use the same selectors. Native reads do not resolve Semantic Control names or normalize values using Control Catalog metadata. Browse continuation tokens are opaque and in-memory.
 
 Important: v1 does not have MCP-side Read Scope authorization. There is no `read.nodes` explicit allowlist and no `read.exclude` exclusion list. If you are migrating from an old draft config, remove explicit read Nodes and exclusions, then rely on OPC UA Server credentials and roles for authorization.
 

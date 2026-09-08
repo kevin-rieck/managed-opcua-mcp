@@ -9,6 +9,7 @@ See [`docs/plan.md`](./docs/plan.md), [`docs/operator-guide.md`](./docs/operator
 - No arbitrary OPC UA writes.
 - Reads rely on OPC UA Server credentials and roles for authorization.
 - Optional Read Entry Points guide agent discovery.
+- Native `browse_node`, `inspect_node(s)`, `read_node(s)`, and `opcua://model-context` expose qualified, source-grounded inspection.
 - Writes use Operator-defined Semantic Controls only.
 - High-risk controls are rejected in v1.
 - Control attempts are audited.

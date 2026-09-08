@@ -51,8 +51,25 @@ const allowedValueSchema = z
 const readSchema = z
   .object({
     defaultBrowseDepth: z.number().int().min(0).default(1),
-    maxBrowseDepth: z.number().int().min(0).default(10),
+    maxBrowseDepth: z.number().int().min(0).max(10).default(10),
     maxReadBatchSize: z.number().int().min(1).max(500).default(50),
+    maxInspectionBatchSize: z.number().int().min(1).max(100).optional(),
+    maxBrowsePageSize: z.number().int().min(1).max(500).optional(),
+    maxArrayElements: z.number().int().min(1).max(10_000).optional(),
+    maxBrowseEdges: z.number().int().min(1).max(10_000).optional(),
+    maxScannedReferences: z.number().int().min(1).max(50_000).optional(),
+    maxExpandedNodes: z.number().int().min(1).max(10_000).optional(),
+    maxBrowseServiceCalls: z.number().int().min(1).max(5_000).optional(),
+    cursorTtlMs: z.number().int().min(1).max(900_000).optional(),
+    maxActiveCursors: z.number().int().min(1).max(1_000).optional(),
+    maxConcurrentOperations: z.number().int().min(1).max(100).optional(),
+    operationDeadlineMs: z.number().int().min(1).max(120_000).optional(),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(4 * 1024 * 1024)
+      .optional(),
     roots: z.array(labelledNodeSchema).default([]),
   })
   .strict()

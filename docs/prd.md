@@ -78,13 +78,14 @@ The MCP Server will not expose arbitrary raw NodeId writes to Agents. Server-sid
 - Require restart for config changes in v1; do not implement live reload or an admin control channel yet.
 - Replace configured Read Scopes with optional Read Entry Points under `read.roots`.
 - Treat Read Entry Points as discovery/navigation aids, not authorization boundaries.
-- Let `browse_node(nodeId)` and `read_node(nodeId)` attempt any NodeId; OPC UA Server authorization determines success.
-- Return OPC UA access-denied and other expected operational failures as structured tool responses.
-- Keep browse depth and read batch size bounded by `read.defaultBrowseDepth`, `read.maxBrowseDepth`, and `read.maxReadBatchSize`.
-- Remove read exclusions and explicit read-node allowlists from v1.
-- Remove read-only value mapping config from v1.
-- Normalize read values only when a read Node corresponds to a configured Semantic Control target.
-- Expose only minimal resources: status, config summary, and read entry point summary.
+- Let `browse_node`, `inspect_node(s)`, and `read_node(s)` use NodeIds or configured Read Entry Point labels; OPC UA Server authorization determines success.
+- Require an explicit browse selector; starting Nodes come from `opcua://read-entry-points`.
+- Return qualified identities, edge completeness, per-field outcomes, exact StatusCodes, and independent JSON conversion outcomes.
+- Keep browse depth, page size, read/inspection batch size, response size, cursor, and deadline limits bounded by `read` settings.
+- Use opaque in-memory browse cursors for native continuation points; never expose native continuation bytes.
+- Remove read exclusions, explicit read-node allowlists, and read-only value mapping from v1.
+- Never resolve Semantic Control names or apply Control Catalog normalization to native reads.
+- Expose only minimal resources: status, config summary, read entry point summary, and live model context.
 - Use tools for parameterized operations and live reads.
 - Expose writes only through Semantic Controls.
 - Do not allow Agents to write arbitrary NodeIds.

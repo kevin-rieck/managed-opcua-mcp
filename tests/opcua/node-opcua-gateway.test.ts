@@ -32,6 +32,19 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     });
   });
 
+  it('notifies inspection modules when a connection generation changes or closes', async () => {
+    const client = resolvedClient();
+    const gateway = new NodeOpcUaGateway({ connection: anonymousConnection, clientFactory: () => client });
+    const clear = vi.fn();
+    gateway.onInspectionGenerationChange(clear);
+
+    await gateway.connect();
+    await flushPromises();
+    await gateway.close();
+
+    expect(clear).toHaveBeenCalledTimes(2);
+  });
+
   it('connects with configured security and username/password environment auth', async () => {
     vi.stubEnv('OPCUA_USERNAME', 'operator');
     vi.stubEnv('OPCUA_PASSWORD', 'secret');

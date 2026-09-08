@@ -38,12 +38,13 @@ export type FieldOutcome<T> =
       source?: QualifiedNodeIdentity;
       statusCode?: string;
     }
-  | { state: 'not_present'; statusCode?: string }
+  | { state: 'not_present'; statusCode?: string; source?: QualifiedNodeIdentity }
   | {
       state: 'denied' | 'failed' | 'unsupported';
       code: string;
       message: string;
       statusCode?: string;
+      source?: QualifiedNodeIdentity;
     };
 
 export interface QualifiedNodeIdentity {

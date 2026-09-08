@@ -52,6 +52,7 @@ export interface ProtocolDataValue {
   quality: ProtocolQuality;
   value?: unknown;
   dataType?: string;
+  arrayType?: 'scalar' | 'array' | 'matrix';
   sourceTimestamp?: string;
   serverTimestamp?: string;
 }
@@ -138,7 +139,7 @@ export interface NodeOpcUaReadDescription {
 }
 
 export interface NodeOpcUaDataValue {
-  value?: { dataType?: unknown; value?: unknown } | null;
+  value?: { dataType?: unknown; value?: unknown; arrayType?: unknown } | null;
   statusCode?: unknown;
   sourceTimestamp?: Date | string | null;
   serverTimestamp?: Date | string | null;
@@ -646,6 +647,8 @@ function mapDataValue(dataValue: NodeOpcUaDataValue): ProtocolDataValue {
     result.value = dataValue.value.value;
     const dataType = stringifyValue(dataValue.value.dataType);
     if (dataType !== undefined) result.dataType = dataType;
+    const arrayType = protocolArrayType(dataValue.value.arrayType);
+    if (arrayType !== undefined) result.arrayType = arrayType;
   }
   const sourceTimestamp = stringifyTimestamp(dataValue.sourceTimestamp);
   const serverTimestamp = stringifyTimestamp(dataValue.serverTimestamp);
@@ -771,6 +774,13 @@ function stringifyValue(value: unknown): string | undefined {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return value.toString();
   }
+  return undefined;
+}
+
+function protocolArrayType(value: unknown): ProtocolDataValue['arrayType'] {
+  if (value === 0 || value === 'Scalar') return 'scalar';
+  if (value === 1 || value === 'Array') return 'array';
+  if (value === 2 || value === 'Matrix') return 'matrix';
   return undefined;
 }
 
