@@ -1,5 +1,4 @@
 import { CommanderError } from 'commander';
-import type { AppConfig } from '../../config/schema.js';
 import { getOnlineValidation, type OnlineValidationResult } from '../../mcp/online-validation.js';
 import {
   type CommandOutput,
@@ -13,13 +12,7 @@ import {
 export interface DoctorOptions {
   config: string;
   format?: string;
-  strictWarnings?: boolean;
   onlineTimeoutMs?: string;
-}
-
-interface DoctorWarning extends Record<string, unknown> {
-  code: string;
-  message: string;
 }
 
 export async function runDoctorCommand(
@@ -58,11 +51,9 @@ export async function runDoctorCommand(
     await gateway.close();
   }
 
-  const warnings = commissioningWarnings(local.loaded.config);
   const base = {
     localValidation: { ok: true, configHash: local.loaded.configHash },
     onlineDiagnostics: doctorOnlineDiagnostics(onlineValidation),
-    warnings,
   };
 
   if (onlineValidation.state === 'pending') {
@@ -81,19 +72,11 @@ export async function runDoctorCommand(
     return;
   }
 
-  if (warnings.length > 0 && options.strictWarnings === true) {
-    dependencies.setExitCode(5);
-    dependencies.stdout(
-      `${JSON.stringify(redactSecrets({ ok: false, resultClass: 'strict_warning_failure', ...base }), null, 2)}\n`,
-    );
-    return;
-  }
-
   dependencies.stdout(
     `${JSON.stringify(
       redactSecrets({
         ok: true,
-        resultClass: warnings.length > 0 ? 'commissioning_warnings' : 'success',
+        resultClass: 'success',
         ...base,
       }),
       null,
@@ -114,21 +97,6 @@ function doctorOnlineDiagnostics(validation: OnlineValidationResult): Record<str
     state: validation.state,
     blockingErrors: validation.reasons,
     readRoots: validation.readRoots,
-    controls: validation.controls,
     connectionGeneration: validation.connectionGeneration,
   };
-}
-
-function commissioningWarnings(config: AppConfig): DoctorWarning[] {
-  if (config.controls === undefined) return [];
-  if (!config.controls.enabled && config.controls.items.length > 0) {
-    return [
-      {
-        code: 'controls_disabled',
-        message:
-          'controls.enabled is false; Semantic Controls are visible for commissioning but not executable.',
-      },
-    ];
-  }
-  return [];
 }

@@ -1,0 +1,5 @@
+# 0.2.0 release notes (pending acceptance)
+
+Breaking boundary: package 0.2.0 uses strict configuration `version: 2`; v1 files are rejected and never rewritten. Native `write_node` is always exposed and depends on OPC UA Server authorization, even for formerly read-only configurations. The four old catalog tools are removed without replacement. `setup` and `discover-controls` and commissioning reports are also removed without replacement. Reads return raw values; no automatic readback or confirmation remains.
+
+Write audit now records native preflight/intent/completion events and independently reports audit and mutation outcomes; consumers of the old audit format must migrate. The explicit certificate trust manager uses a different store; provision trust rather than bypassing it. The node-opcua SDK is pinned due to a private single-dispatch seam. Read the [operator cutover and rollback](operator-guide.md) and [write contract](specs/opcua-native-write-v2.md) before deployment. Full release acceptance and independent review are pending; native inspection remains separate and unimplemented.

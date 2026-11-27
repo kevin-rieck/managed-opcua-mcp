@@ -21,6 +21,7 @@ describe('NodeOpcUaGateway adapter loading', () => {
       close: () => Promise.resolve(),
       browse: () =>
         Promise.resolve({
+          statusCode: { value: 0, name: 'Good' },
           references: [
             {
               nodeId: 'ns=2;s=Timestamp',

@@ -17,74 +17,40 @@ describe('JsonlAuditSink', () => {
     const filePath = join(dir, 'nested', 'audit.jsonl');
     const sink = new JsonlAuditSink(filePath);
 
-    await sink.append({
-      id: 'audit-1',
-      timestamp: '2026-07-07T18:00:00.000Z',
-      event: 'control.prepare',
-      result: 'accepted',
-      controlName: 'motor_enabled',
-      nodeId: 'ns=2;s=Machine.MotorEnabled',
-      requestedValue: 'enabled',
-      rawRequestedValue: true,
-      riskLevel: 'low',
-      callerIdentity: 'agent-a',
-      configHash: 'abc123',
-      opcuaStatus: 'Good',
-      reason: 'start test run',
-    });
-    await sink.append({
-      id: 'audit-2',
-      timestamp: '2026-07-07T18:00:01.000Z',
-      event: 'control.write',
-      result: 'rejected',
-      controlName: 'motor_enabled',
-      nodeId: 'ns=2;s=Machine.MotorEnabled',
-      requestedValue: 'enabled',
-      rawRequestedValue: true,
-      riskLevel: 'low',
-      configHash: 'abc123',
-      errorMessage: 'Audit unavailable',
-    });
+    const records = [
+      {
+        id: 'audit-1',
+        attemptId: 'attempt-1',
+        timestamp: '2026-07-07T18:00:00.000Z',
+        event: 'write.intent',
+        configHash: 'abc123',
+        nodeId: 'ns=2;s=Motor',
+        dataType: 'Boolean',
+        requestedValue: true,
+        mutation: { outcome: 'pending' },
+      },
+      {
+        id: 'audit-2',
+        attemptId: 'attempt-1',
+        timestamp: '2026-07-07T18:00:01.000Z',
+        event: 'write.completion',
+        configHash: 'abc123',
+        nodeId: 'ns=2;s=Motor',
+        dataType: 'Boolean',
+        requestedValue: true,
+        mutation: {
+          outcome: 'accepted',
+          statusCode: { value: 0, hex: '0x00000000', name: 'Good' },
+        },
+      },
+    ] as const;
+    for (const record of records) await sink.append(record);
 
     // Test-controlled temporary path.
     // eslint-disable-next-line security/detect-non-literal-fs-filename
     const lines = (await readFile(filePath, 'utf8')).trimEnd().split('\n');
 
     expect(lines).toHaveLength(2);
-    expect(
-      lines.map((line) => {
-        const parsed: unknown = JSON.parse(line);
-        return parsed;
-      }),
-    ).toEqual([
-      {
-        id: 'audit-1',
-        timestamp: '2026-07-07T18:00:00.000Z',
-        event: 'control.prepare',
-        result: 'accepted',
-        controlName: 'motor_enabled',
-        nodeId: 'ns=2;s=Machine.MotorEnabled',
-        requestedValue: 'enabled',
-        rawRequestedValue: true,
-        riskLevel: 'low',
-        callerIdentity: 'agent-a',
-        configHash: 'abc123',
-        opcuaStatus: 'Good',
-        reason: 'start test run',
-      },
-      {
-        id: 'audit-2',
-        timestamp: '2026-07-07T18:00:01.000Z',
-        event: 'control.write',
-        result: 'rejected',
-        controlName: 'motor_enabled',
-        nodeId: 'ns=2;s=Machine.MotorEnabled',
-        requestedValue: 'enabled',
-        rawRequestedValue: true,
-        riskLevel: 'low',
-        configHash: 'abc123',
-        errorMessage: 'Audit unavailable',
-      },
-    ]);
+    expect(lines.map((line): unknown => JSON.parse(line) as unknown)).toEqual(records);
   });
 });

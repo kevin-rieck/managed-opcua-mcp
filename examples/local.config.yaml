@@ -1,8 +1,8 @@
-# Copy to opcua-mcp.local.yaml before editing. *.local.yaml is gitignored.
-# Write controls must only target simulator, test, or otherwise safe nodes approved by an Operator.
-# OPC UA Server credentials and roles enforce read/write authorization.
+# Simulator-only: None security and anonymous access are insecure.
+# OPC UA Server account permissions enforce write authorization, including anonymous sessions.
+# Write only to an explicitly designated safe simulator Node.
 
-version: 1
+version: 2
 
 connection:
   endpointUrl: opc.tcp://localhost:4840
@@ -23,22 +23,3 @@ read:
 audit:
   file: ./audit.jsonl
   maxReasonLength: 1000
-
-controls:
-  enabled: false # Optional. Set true or omit only after Operator review.
-  defaults:
-    cooldownMs: 1000
-    mediumConfirmationTtlMs: 60000
-  items:
-    - name: set_motor_speed
-      group: line_1/motor_3
-      description: Sets the motor speed setpoint.
-      nodeId: ns=2;s=Motor.SpeedSetpoint
-      dataType: Double
-      unit: rpm
-      min: 0
-      max: 1800
-      riskLevel: medium
-      riskNote: Changes motor speed; verify downstream equipment is ready.
-      cooldownMs: 5000
-      requireCurrentValueForConfirmation: true

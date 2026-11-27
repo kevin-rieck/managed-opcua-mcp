@@ -1,7 +1,7 @@
 {
   "name": "managed-opcua-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for scoped OPC UA read access and operator-approved semantic controls.",
+  "version": "0.2.0",
+  "description": "MCP server for OPC UA browsing, reading, and native writes.",
   "type": "module",
   "private": true,
   "bin": {
@@ -35,7 +35,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
     "commander": "^12.1.0",
-    "node-opcua": "^2.153.0",
+    "node-opcua": "2.174.0",
     "yaml": "^2.8.0",
     "zod": "^3.25.0"
   },

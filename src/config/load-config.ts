@@ -14,6 +14,16 @@ export async function loadConfigFile(path: string): Promise<LoadedConfig> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   const source = await readFile(path, 'utf8');
   const parsedYaml = YAML.parse(source) as unknown;
+  if (
+    typeof parsedYaml === 'object' &&
+    parsedYaml !== null &&
+    'version' in parsedYaml &&
+    parsedYaml.version === 1
+  ) {
+    throw new Error(
+      'Configuration version 1 is unsupported; manually create a version 2 config after reviewing OPC UA account write permissions and removing controls.',
+    );
+  }
   const resolved = resolveNonSecretEnvironment(parsedYaml);
   const config = appConfigSchema.parse(resolved);
   return { config, configHash: await computeConfigHash(config) };
@@ -34,7 +44,8 @@ function resolveEnvRefs(value: unknown, path: string[]): unknown {
       return envValue;
     });
   }
-  if (Array.isArray(value)) return value.map((item, index) => resolveEnvRefs(item, [...path, String(index)]));
+  if (Array.isArray(value))
+    return value.map((item, index) => resolveEnvRefs(item, [...path, String(index)]));
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([key, nested]) => [key, resolveEnvRefs(nested, [...path, key])]),
@@ -44,7 +55,9 @@ function resolveEnvRefs(value: unknown, path: string[]): unknown {
 }
 
 function isSecretPath(path: string[]): boolean {
-  return path.join('.') === 'connection.auth.username' || path.join('.') === 'connection.auth.password';
+  return (
+    path.join('.') === 'connection.auth.username' || path.join('.') === 'connection.auth.password'
+  );
 }
 
 export async function computeConfigHash(config: AppConfig): Promise<string> {

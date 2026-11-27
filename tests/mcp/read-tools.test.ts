@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it, vi } from 'vitest';
 import { appConfigSchema, type AppConfig } from '../../src/config/schema.js';
 import { createMcpServer } from '../../src/mcp/server.js';
+import { OpcUaStatusError } from '../../src/opcua/status-code.js';
 import type {
   BrowseNodeResult,
   OpcUaGateway,
@@ -15,7 +16,7 @@ interface ToolTextResult {
 }
 
 const config = appConfigSchema.parse({
-  version: 1,
+  version: 2,
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',
@@ -24,46 +25,14 @@ const config = appConfigSchema.parse({
   },
   read: {
     maxReadBatchSize: 2,
-    roots: [{ nodeId: 'ns=2;s=Machine.Temperature', label: 'temperature' }],
-  },
-  audit: { file: './audit.jsonl' },
-  controls: {
-    items: [
-      {
-        name: 'motor_enabled',
-        description: 'Enables the motor.',
-        nodeId: 'ns=2;s=Machine.MotorEnabled',
-        dataType: 'Boolean',
-        falseLabel: 'disabled',
-        trueLabel: 'enabled',
-        riskLevel: 'low',
-        riskNote: 'Test control.',
-      },
-      {
-        name: 'operating_mode',
-        description: 'Sets operating mode.',
-        nodeId: 'ns=2;s=Machine.Mode',
-        dataType: 'String',
-        allowedValues: [
-          { label: 'manual', value: 'MAN' },
-          { label: 'automatic', value: 'AUTO' },
-        ],
-        riskLevel: 'low',
-        riskNote: 'Test control.',
-      },
-      {
-        name: 'speed_setpoint',
-        description: 'Sets speed.',
-        nodeId: 'ns=2;s=Machine.Speed',
-        dataType: 'Double',
-        unit: 'rpm',
-        min: 0,
-        max: 1800,
-        riskLevel: 'low',
-        riskNote: 'Test control.',
-      },
+    roots: [
+      { nodeId: 'ns=2;s=Machine.Temperature', label: 'temperature' },
+      { nodeId: 'ns=2;s=Machine.MotorEnabled', label: 'motor_enabled' },
+      { nodeId: 'ns=2;s=Machine.Mode', label: 'operating_mode' },
+      { nodeId: 'ns=2;s=Machine.Speed', label: 'speed_setpoint' },
     ],
   },
+  audit: { file: './audit.jsonl' },
 });
 
 describe('read_node MCP tool', () => {
@@ -105,7 +74,7 @@ describe('read_node MCP tool', () => {
     }
   });
 
-  it('reads by configured label and normalizes Semantic Control target values', async () => {
+  it('reads raw values by configured root label', async () => {
     const gateway = fakeGateway({
       'ns=2;s=Machine.MotorEnabled': {
         nodeId: 'ns=2;s=Machine.MotorEnabled',
@@ -135,8 +104,7 @@ describe('read_node MCP tool', () => {
           ok: true,
           nodeId: 'ns=2;s=Machine.MotorEnabled',
           label: 'motor_enabled',
-          value: 'enabled',
-          rawValue: true,
+          value: true,
           dataType: 'Boolean',
           opcuaStatus: 'Good',
         },
@@ -148,8 +116,7 @@ describe('read_node MCP tool', () => {
             ok: true,
             nodeId: 'ns=2;s=Machine.Mode',
             label: 'operating_mode',
-            value: 'automatic',
-            rawValue: 'AUTO',
+            value: 'AUTO',
             dataType: 'String',
             opcuaStatus: 'Good',
           },
@@ -164,7 +131,6 @@ describe('read_node MCP tool', () => {
             label: 'speed_setpoint',
             value: 900,
             dataType: 'Double',
-            unit: 'rpm',
             opcuaStatus: 'Good',
           },
         },
@@ -177,6 +143,36 @@ describe('read_node MCP tool', () => {
 });
 
 describe('read_nodes MCP tool', () => {
+  it('retains uncertain quality and exact denied status independently in a batch', async () => {
+    const statusCode = { value: 0x40000000, hex: '0x40000000', name: 'Uncertain' };
+    const denied = { value: 0x801f0000, hex: '0x801f0000', name: 'BadUserAccessDenied' };
+    const gateway = fakeGateway({
+      'ns=2;s=Machine.Temperature': {
+        nodeId: 'ns=2;s=Machine.Temperature',
+        value: 72.5,
+        opcuaStatus: 'Uncertain',
+        statusCode,
+      },
+    });
+    gateway.read.mockRejectedValueOnce(new OpcUaStatusError('OPC UA read failed.', denied));
+    const { client, server } = await connectTestClient(config, gateway);
+    try {
+      const result = await callJsonTool(client, 'read_nodes', {
+        identifiers: [{ nodeId: 'ns=2;s=Denied' }, { label: 'temperature' }],
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        results: [
+          { ok: false, code: 'opcua_read_failed', statusCode: denied },
+          { ok: true, value: 72.5, statusCode },
+        ],
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('returns partial success with per-node errors', async () => {
     const gateway = fakeGateway({
       'ns=2;s=Machine.Temperature': {
@@ -319,6 +315,6 @@ function fakeGateway(
     browse: (): Promise<BrowseNodeResult[]> => Promise.resolve([]),
     read,
     readMany: (nodeIds) => Promise.all(nodeIds.map((nodeId) => read(nodeId))),
-    write: () => Promise.reject(new Error('not used')),
+    writeNative: () => Promise.reject(new Error('not used')),
   };
 }

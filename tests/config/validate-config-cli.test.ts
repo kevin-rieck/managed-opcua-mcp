@@ -25,9 +25,13 @@ function runValidateConfig(configYaml: string, command = 'validate') {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   writeFileSync(configPath, configYaml);
 
-  return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/index.ts', command, '--config', configPath], {
-    encoding: 'utf8',
-  });
+  return spawnSync(
+    process.execPath,
+    ['--import', 'tsx', 'src/cli/index.ts', command, '--config', configPath],
+    {
+      encoding: 'utf8',
+    },
+  );
 }
 
 function runCli(args: string[]) {
@@ -37,7 +41,7 @@ function runCli(args: string[]) {
 }
 
 const readConfig = `
-version: 1
+version: 2
 connection:
   endpointUrl: opc.tcp://localhost:4840
   securityMode: None
@@ -53,7 +57,7 @@ audit:
 `;
 
 const controlConfig = `
-version: 1
+version: 2
 connection:
   endpointUrl: opc.tcp://localhost:4840
   securityMode: None
@@ -68,17 +72,6 @@ read:
       label: machine
 audit:
   file: ./audit.jsonl
-controls:
-  items:
-    - name: set_motor_speed
-      description: Sets the motor speed setpoint.
-      nodeId: ns=2;s=Motor.SpeedSetpoint
-      dataType: Double
-      unit: rpm
-      min: 0
-      max: 1800
-      riskLevel: low
-      riskNote: Safe simulator setpoint.
 `;
 
 describe('validate CLI', () => {
@@ -93,9 +86,9 @@ describe('validate CLI', () => {
     expect(firstBody.ok).toBe(true);
     expect(firstBody.configHash).toMatch(/^[a-f0-9]{16}$/);
     expect(secondBody.configHash).toBe(firstBody.configHash);
-  });
+  }, 60_000);
 
-  it('accepts representative control config with secret environment references and optional controls.enabled', () => {
+  it('accepts secret environment references without resolving them', () => {
     const result = runValidateConfig(controlConfig);
 
     expect(result.status).toBe(0);
@@ -194,7 +187,9 @@ function isFailedValidationOutput(value: unknown): value is FailedValidationOutp
   );
 }
 
-function isValidationError(value: unknown): value is { path: string; code: string; message: string } {
+function isValidationError(
+  value: unknown,
+): value is { path: string; code: string; message: string } {
   return (
     typeof value === 'object' &&
     value !== null &&

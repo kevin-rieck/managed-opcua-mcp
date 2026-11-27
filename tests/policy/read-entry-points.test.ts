@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { appConfigSchema } from '../../src/config/schema.js';
-import { getReadEntryPoints, resolveReadEntryPointLabel } from '../../src/policy/read-entry-points.js';
+import {
+  getReadEntryPoints,
+  resolveReadEntryPointLabel,
+} from '../../src/policy/read-entry-points.js';
 
 const config = appConfigSchema.parse({
-  version: 1,
+  version: 2,
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',

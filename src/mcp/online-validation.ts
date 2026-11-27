@@ -1,23 +1,20 @@
-import type { AppConfig, ControlItem } from '../config/schema.js';
+import type { AppConfig } from '../config/schema.js';
 import type { NodeMetadataResult, OpcUaGateway, OpcUaStatus } from '../opcua/gateway.js';
+import { statusSeverity } from '../opcua/status-code.js';
 
 export type OnlineValidationState = 'pending' | 'valid' | 'invalid';
-
-const SCALAR_VALUE_RANK = -1;
 
 export interface OnlineValidationReason extends Record<string, unknown> {
   code: string;
   message: string;
   nodeId?: string;
   label?: string;
-  controlName?: string;
 }
 
 export interface OnlineValidationResult {
   state: OnlineValidationState;
   connectionGeneration: number;
   reasons: OnlineValidationReason[];
-  controls: Record<string, OnlineValidationReason[]>;
   readRoots: OnlineValidationReason[];
 }
 
@@ -46,7 +43,6 @@ export async function getOnlineValidation(
           ),
         },
       ],
-      controls: {},
       readRoots: [],
     };
   }
@@ -62,20 +58,12 @@ export async function getOnlineValidation(
   return result;
 }
 
-export function validationReasonsForControl(
-  validation: OnlineValidationResult,
-  controlName: string,
-): OnlineValidationReason[] {
-  return validation.controls[controlName] ?? [];
-}
-
 async function validateOnlineConfig(
   config: AppConfig,
   gateway: OpcUaGateway,
   status: OpcUaStatus,
 ): Promise<OnlineValidationResult> {
   const readRoots: OnlineValidationReason[] = [];
-  const controls: Record<string, OnlineValidationReason[]> = {};
 
   for (const root of config.read.roots) {
     const metadata = await safeNodeMetadata(gateway, root.nodeId);
@@ -89,8 +77,7 @@ async function validateOnlineConfig(
       continue;
     }
     if (metadata.value.exists === false || metadata.value.browseable === false) {
-      const nodeIdStatus = metadata.value.attributeStatuses?.nodeId;
-      const unavailable = metadata.value.exists === false && isAccessFailure(nodeIdStatus);
+      const unavailable = metadata.value.exists === false && isAccessFailure(metadata.value);
       const missing = metadata.value.exists === false && !unavailable;
       readRoots.push({
         code: unavailable
@@ -110,155 +97,46 @@ async function validateOnlineConfig(
     }
   }
 
-  for (const control of config.controls?.items ?? []) {
-    const reasons = await validateControl(gateway, control);
-    if (reasons.length > 0) controls[control.name] = reasons;
-  }
-
-  const reasons = [...readRoots, ...Object.values(controls).flat()];
+  const reasons = [...readRoots];
   return {
     state: reasons.length === 0 ? 'valid' : 'invalid',
     connectionGeneration: status.connectionGeneration,
     reasons,
-    controls,
     readRoots,
   };
 }
 
-async function validateControl(
-  gateway: OpcUaGateway,
-  control: ControlItem,
-): Promise<OnlineValidationReason[]> {
-  const metadata = await safeNodeMetadata(gateway, control.nodeId);
-  if (!metadata.ok) {
-    return [
-      {
-        code: 'control_target_unavailable',
-        message: metadata.message,
-        nodeId: control.nodeId,
-        controlName: control.name,
-      },
-    ];
-  }
-
-  const reasons: OnlineValidationReason[] = [];
-  if (metadata.value.exists === false) {
-    const unavailable = isAccessFailure(metadata.value.attributeStatuses?.nodeId);
-    reasons.push(
-      reason(
-        control,
-        unavailable ? 'control_target_unavailable' : 'control_target_missing',
-        unavailable
-          ? 'Semantic Control target Node could not be inspected.'
-          : 'Semantic Control target Node does not exist.',
-      ),
-    );
-    return withMetadataEvidence(reasons, metadata.value);
-  }
-  if (metadata.value.readable === false) {
-    reasons.push(
-      reason(
-        control,
-        'control_target_not_readable',
-        'Semantic Control target Node is not readable.',
-      ),
-    );
-  }
-  if (metadata.value.writable === false) {
-    reasons.push(
-      reason(
-        control,
-        'control_target_not_writable',
-        'Semantic Control target Node is not writable.',
-      ),
-    );
-  }
-  if (
-    metadata.value.dataType === undefined &&
-    isBadStatus(metadata.value.attributeStatuses?.dataType)
-  ) {
-    reasons.push(
-      reason(
-        control,
-        'control_target_datatype_unavailable',
-        'Semantic Control target Node data type could not be inspected.',
-      ),
-    );
-  }
-  if (
-    metadata.value.valueRank === undefined &&
-    isBadStatus(metadata.value.attributeStatuses?.valueRank)
-  ) {
-    reasons.push(
-      reason(
-        control,
-        'control_target_shape_unavailable',
-        'Semantic Control target Node value shape could not be inspected.',
-      ),
-    );
-  }
-  if (
-    (metadata.value.readable === undefined || metadata.value.writable === undefined) &&
-    isBadStatus(metadata.value.attributeStatuses?.userAccessLevel)
-  ) {
-    reasons.push(
-      reason(
-        control,
-        'control_target_access_unavailable',
-        'Semantic Control target Node session access could not be inspected.',
-      ),
-    );
-  }
-  if (metadata.value.dataType !== undefined && metadata.value.dataType !== control.dataType) {
-    reasons.push({
-      ...reason(
-        control,
-        'control_target_datatype_mismatch',
-        'Semantic Control target Node data type does not match configuration.',
-      ),
-      expectedDataType: control.dataType,
-      actualDataType: metadata.value.dataType,
-    });
-  }
-  if (metadata.value.valueRank !== undefined && metadata.value.valueRank !== SCALAR_VALUE_RANK) {
-    reasons.push({
-      ...reason(
-        control,
-        'control_target_unsupported_shape',
-        'Semantic Control target Node must have a scalar value.',
-      ),
-      expectedValueRank: SCALAR_VALUE_RANK,
-      actualValueRank: metadata.value.valueRank,
-    });
-  }
-  return withMetadataEvidence(reasons, metadata.value);
-}
-
-function withMetadataEvidence(
-  reasons: OnlineValidationReason[],
-  metadata: NodeMetadataResult,
-): OnlineValidationReason[] {
-  return reasons.map((validationReason) => ({
-    ...validationReason,
-    ...metadataEvidence(metadata),
-  }));
-}
-
 function metadataEvidence(metadata: NodeMetadataResult): Record<string, unknown> {
   if (metadata.attributeStatuses === undefined) return {};
-  return { evidence: { attributeStatuses: metadata.attributeStatuses } };
+  return {
+    evidence: {
+      attributeStatuses: metadata.attributeStatuses,
+      ...(metadata.attributeStatusCodes
+        ? { attributeStatusCodes: metadata.attributeStatusCodes }
+        : {}),
+    },
+  };
 }
 
-function isBadStatus(status: string | undefined): boolean {
+function isBadStatus(
+  metadata: NodeMetadataResult,
+  key: keyof NonNullable<NodeMetadataResult['attributeStatuses']>,
+): boolean {
+  if (metadata.attributeStatusCodes !== undefined) {
+    const status = metadata.attributeStatusCodes[key];
+    return status === undefined || statusSeverity(status) !== 'good';
+  }
+  const status = metadata.attributeStatuses?.[key];
   return status !== undefined && !status.startsWith('Good');
 }
 
-function isAccessFailure(status: string | undefined): boolean {
-  return isBadStatus(status) && status !== 'BadNodeIdUnknown';
-}
-
-function reason(control: ControlItem, code: string, message: string): OnlineValidationReason {
-  return { code, message, nodeId: control.nodeId, controlName: control.name };
+function isAccessFailure(metadata: NodeMetadataResult): boolean {
+  if (!isBadStatus(metadata, 'nodeId')) return false;
+  const numeric = metadata.attributeStatusCodes?.nodeId;
+  return numeric
+    ? numeric.value >>> 16 !== 0x8034
+    : metadata.attributeStatusCodes !== undefined ||
+        metadata.attributeStatuses?.nodeId !== 'BadNodeIdUnknown';
 }
 
 async function safeNodeMetadata(
@@ -289,7 +167,6 @@ function pendingValidation(status: OpcUaStatus): OnlineValidationResult {
         connection: { state: status.state, connectionGeneration: status.connectionGeneration },
       },
     ],
-    controls: {},
     readRoots: [],
   };
 }

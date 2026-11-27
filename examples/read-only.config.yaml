@@ -1,14 +1,17 @@
-# This example omits controls, so no Control Surface is exposed.
-# OPC UA Server credentials and roles enforce read authorization.
+# Simulator-only: None security is insecure.
+# Read-only access requires OPC UA Server-enforced denial of writes for this account.
+# The write_node tool is always exposed; configuration alone does not prevent writes.
 
-version: 1
+version: 2
 
 connection:
   endpointUrl: opc.tcp://localhost:4840
   securityMode: None
   securityPolicy: None
   auth:
-    type: anonymous
+    type: usernamePassword
+    username: ${OPCUA_USERNAME}
+    password: ${OPCUA_PASSWORD}
 
 read:
   defaultBrowseDepth: 1

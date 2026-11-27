@@ -3,6 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it, vi } from 'vitest';
 import { appConfigSchema, type AppConfig } from '../../src/config/schema.js';
 import { createMcpServer } from '../../src/mcp/server.js';
+import { OpcUaStatusError } from '../../src/opcua/status-code.js';
 import type { BrowseNodeResult, OpcUaGateway, OpcUaStatus } from '../../src/opcua/gateway.js';
 
 interface ToolTextResult {
@@ -10,7 +11,7 @@ interface ToolTextResult {
 }
 
 const config = appConfigSchema.parse({
-  version: 1,
+  version: 2,
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',
@@ -118,12 +119,29 @@ describe('browse_node MCP tool', () => {
     }
   });
 
+  it('returns exact numeric browse failure status', async () => {
+    const gateway = fakeGateway();
+    const statusCode = { value: 0x801f0000, hex: '0x801f0000', name: 'BadUserAccessDenied' };
+    gateway.browse.mockRejectedValueOnce(new OpcUaStatusError('OPC UA browse failed.', statusCode));
+    const { client, server } = await connectTestClient(config, gateway);
+    try {
+      await expect(
+        callJsonTool(client, 'browse_node', { label: 'machine' }),
+      ).resolves.toMatchObject({ ok: false, code: 'opcua_browse_failed', statusCode });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('returns a structured not-connected response without browsing live Nodes', async () => {
     const gateway = fakeGateway([], { state: 'connecting', connectionGeneration: 0 });
     const { client, server } = await connectTestClient(config, gateway);
 
     try {
-      await expect(callJsonTool(client, 'browse_node', { label: 'machine' })).resolves.toMatchObject({
+      await expect(
+        callJsonTool(client, 'browse_node', { label: 'machine' }),
+      ).resolves.toMatchObject({
         ok: false,
         code: 'opcua_not_connected',
         connection: { state: 'connecting', connectionGeneration: 0 },
@@ -209,6 +227,6 @@ function fakeGateway(
     browse: vi.fn(() => Promise.resolve(results)),
     read: () => Promise.reject(new Error('not used')),
     readMany: () => Promise.reject(new Error('not used')),
-    write: () => Promise.reject(new Error('not used')),
+    writeNative: () => Promise.reject(new Error('not used')),
   };
 }

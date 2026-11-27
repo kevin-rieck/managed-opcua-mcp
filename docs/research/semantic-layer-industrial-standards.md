@@ -1,5 +1,7 @@
 # Industrial semantic patterns for the next-generation Semantic Layer
 
+> Historical research/prototype, not current product behavior or operator guidance. Commissioning and the catalog were retired without replacement; see the [operator guide](../operator-guide.md).
+
 Research for [#25 — Research reusable industrial semantic standards](https://github.com/kevin-rieck/managed-opcua-mcp/issues/25).
 
 ## Question

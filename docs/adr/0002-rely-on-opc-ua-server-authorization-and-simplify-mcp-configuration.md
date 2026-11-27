@@ -1,5 +1,7 @@
 # Rely on OPC UA Server authorization and simplify MCP configuration
 
+Status: Partially superseded by ADR 0003 for the v2 migration. Server authorization and Read Entry Points remain; the retained Control Catalog and its operational switch are superseded. Historical reasoning follows.
+
 The MCP Server will rely on OPC UA Server credentials and roles as the authorization boundary for reads and underlying writes, instead of duplicating detailed read/write permissions in MCP configuration. MCP configuration will provide Read Entry Points for agent navigation, and writes will still be exposed only through Operator-defined Semantic Controls in a Control Catalog so the agent-facing interface retains names, validation rules, risk context, confirmation, and audit semantics. This trades MCP-side read defense-in-depth for a smaller configuration surface, clearer ownership of access rights, and easier adoption.
 
 ## Consequences

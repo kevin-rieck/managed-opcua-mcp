@@ -72,6 +72,7 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       close: () => Promise.resolve(),
       browse: vi.fn(() =>
         Promise.resolve({
+          statusCode: { value: 0, name: 'Good' },
           references: [
             {
               nodeId: { toString: () => 'ns=2;s=Machine.Motor' },
@@ -113,20 +114,27 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
   it('inspects Node metadata without reading the current value', async () => {
     const read = vi.fn((description: { attributeId: number }) => {
       const attributes: Record<number, unknown> = {
-        1: { value: { value: 'ns=2;s=Machine.Temperature' }, statusCode: { name: 'Good' } },
-        2: { value: { value: 2 }, statusCode: { name: 'Good' } },
-        14: { value: { value: 11 }, statusCode: { name: 'Good' } },
-        15: { value: { value: -1 }, statusCode: { name: 'Good' } },
-        17: { value: { value: 3 }, statusCode: { name: 'Good' } },
-        18: { value: { value: 1 }, statusCode: { name: 'Good' } },
+        1: {
+          value: { value: 'ns=2;s=Machine.Temperature' },
+          statusCode: { value: 0, name: 'Good' },
+        },
+        2: { value: { value: 2 }, statusCode: { value: 0, name: 'Good' } },
+        14: { value: { value: 11 }, statusCode: { value: 0, name: 'Good' } },
+        15: { value: { value: -1 }, statusCode: { value: 0, name: 'Good' } },
+        17: { value: { value: 3 }, statusCode: { value: 0, name: 'Good' } },
+        18: { value: { value: 1 }, statusCode: { value: 0, name: 'Good' } },
       };
       return Promise.resolve(
-        attributes[description.attributeId] ?? { statusCode: { name: 'BadAttributeIdInvalid' } },
+        attributes[description.attributeId] ?? {
+          statusCode: { value: 0x80350000, name: 'BadAttributeIdInvalid' },
+        },
       );
     });
     const session = {
       close: () => Promise.resolve(),
-      browse: vi.fn(() => Promise.resolve({ references: [], statusCode: { name: 'Good' } })),
+      browse: vi.fn(() =>
+        Promise.resolve({ references: [], statusCode: { value: 0, name: 'Good' } }),
+      ),
       read,
     };
     const gateway = new NodeOpcUaGateway({
@@ -145,6 +153,7 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       dataType: 'Double',
       valueRank: -1,
       attributeStatuses: goodMetadataStatuses(),
+      attributeStatusCodes: goodMetadataStatusCodes(),
     });
     expect(read).not.toHaveBeenCalledWith(expect.objectContaining({ attributeId: 13 }));
   });
@@ -152,7 +161,9 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
   it('maps writable session access from OPC UA UserAccessLevel metadata', async () => {
     const session = {
       close: () => Promise.resolve(),
-      browse: vi.fn(() => Promise.resolve({ references: [], statusCode: { name: 'Good' } })),
+      browse: vi.fn(() =>
+        Promise.resolve({ references: [], statusCode: { value: 0, name: 'Good' } }),
+      ),
       read: vi.fn((description: { attributeId: number }) =>
         Promise.resolve({
           value: {
@@ -165,7 +176,7 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
                     ? -1
                     : 3,
           },
-          statusCode: { name: 'Good' },
+          statusCode: { value: 0, name: 'Good' },
         }),
       ),
     };
@@ -185,6 +196,7 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       dataType: 'Double',
       valueRank: -1,
       attributeStatuses: goodMetadataStatuses(),
+      attributeStatusCodes: goodMetadataStatusCodes(),
     });
   });
 
@@ -192,13 +204,16 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     const session = {
       close: () => Promise.resolve(),
       browse: vi.fn(() =>
-        Promise.resolve({ references: [], statusCode: { name: 'BadUserAccessDenied' } }),
+        Promise.resolve({
+          references: [],
+          statusCode: { value: 0x801f0000, name: 'BadUserAccessDenied' },
+        }),
       ),
       read: vi.fn((description: { attributeId: number }) =>
         Promise.resolve(
           description.attributeId === 1
-            ? { value: { value: 'ns=2;s=Machine' }, statusCode: { name: 'Good' } }
-            : { statusCode: { name: 'BadAttributeIdInvalid' } },
+            ? { value: { value: 'ns=2;s=Machine' }, statusCode: { value: 0, name: 'Good' } }
+            : { statusCode: { value: 0x80350000, name: 'BadAttributeIdInvalid' } },
         ),
       ),
     };
@@ -213,6 +228,13 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
     await expect(gateway.getNodeMetadata('ns=2;s=Machine')).resolves.toEqual({
       exists: true,
       browseable: false,
+      attributeStatusCodes: {
+        browse: { value: 0x801f0000, hex: '0x801f0000', name: 'BadUserAccessDenied' },
+        nodeId: { value: 0, hex: '0x00000000', name: 'Good' },
+        dataType: { value: 0x80350000, hex: '0x80350000', name: 'BadAttributeIdInvalid' },
+        valueRank: { value: 0x80350000, hex: '0x80350000', name: 'BadAttributeIdInvalid' },
+        userAccessLevel: { value: 0x80350000, hex: '0x80350000', name: 'BadAttributeIdInvalid' },
+      },
       attributeStatuses: {
         browse: 'BadUserAccessDenied',
         nodeId: 'Good',
@@ -248,35 +270,13 @@ describe('NodeOpcUaGateway connection lifecycle', () => {
       dataType: 'Double',
       value: 72.5,
       opcuaStatus: 'Good',
+      statusCode: { value: 0, hex: '0x00000000', name: 'Good' },
       sourceTimestamp: '2026-07-07T10:00:00.000Z',
       serverTimestamp: '2026-07-07T10:00:01.000Z',
     });
     expect(session.read).toHaveBeenCalledWith({
       nodeId: 'ns=2;s=Machine.Temperature',
       attributeId: 13,
-    });
-  });
-
-  it('writes values through connected sessions', async () => {
-    const session = {
-      close: () => Promise.resolve(),
-      write: vi.fn(() => Promise.resolve({ toString: () => 'Good' })),
-    };
-    const gateway = new NodeOpcUaGateway({
-      connection: anonymousConnection,
-      clientFactory: () => resolvedClient(session),
-    });
-
-    await gateway.connect();
-    await flushPromises();
-
-    await expect(gateway.write('ns=2;s=Machine.Enabled', 'Boolean', true)).resolves.toEqual({
-      opcuaStatus: 'Good',
-    });
-    expect(session.write).toHaveBeenCalledWith({
-      nodeId: 'ns=2;s=Machine.Enabled',
-      attributeId: 13,
-      value: { value: { dataType: 'Boolean', value: true } },
     });
   });
 
@@ -379,6 +379,17 @@ function rejectingClient(error: Error): TestClient {
     createSession,
     createSessionMock: createSession,
     disconnect: vi.fn(() => Promise.resolve()),
+  };
+}
+
+function goodMetadataStatusCodes() {
+  const status = { value: 0, hex: '0x00000000', name: 'Good' };
+  return {
+    browse: status,
+    nodeId: status,
+    dataType: status,
+    valueRank: status,
+    userAccessLevel: status,
   };
 }
 

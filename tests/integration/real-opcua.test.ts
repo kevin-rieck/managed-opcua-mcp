@@ -60,7 +60,10 @@ describeWithEndpoint('real OPC UA integration', () => {
       const { client, server } = await connectTestClient(config, gateway);
       try {
         const result = await callJsonTool(client, 'read_node', { label: 'integration_read_node' });
-        expect(result).toMatchObject({ ok: true, nodeId: requireEnv('OPCUA_TEST_READ_NODE_ID') });
+        expect(result).toMatchObject({
+          ok: true,
+          result: { nodeId: requireEnv('OPCUA_TEST_READ_NODE_ID') },
+        });
       } finally {
         await client.close();
         await server.close();
@@ -70,26 +73,21 @@ describeWithEndpoint('real OPC UA integration', () => {
     }
   });
 
-  itWithWriteNode('performs one explicitly enabled safe Semantic Control write', async () => {
-    const writeConfigOptions: BuildConfigOptions = {
-      writeNodeId: requireEnv('OPCUA_TEST_WRITE_NODE_ID'),
-      writeValue: requireEnv('OPCUA_TEST_WRITE_VALUE'),
-      writeDataType,
-    };
-    if (readNodeId !== undefined) writeConfigOptions.readNodeId = readNodeId;
-    const config = buildConfig(writeConfigOptions);
+  itWithWriteNode('performs one explicitly enabled safe native write', async () => {
+    const config = buildConfig();
     const gateway = new NodeOpcUaGateway({ connection: config.connection });
     await gateway.connect();
     try {
       await waitForConnected(gateway);
       const { client, server } = await connectTestClient(config, gateway);
       try {
-        const result = await callJsonTool(client, 'write_control', {
-          controlName: 'integration_safe_write',
+        const result = await callJsonTool(client, 'write_node', {
+          nodeId: requireEnv('OPCUA_TEST_WRITE_NODE_ID'),
+          dataType: writeDataType,
           value: normalizeWriteInput(requireEnv('OPCUA_TEST_WRITE_VALUE'), writeDataType),
           reason: 'Operator-approved real OPC UA integration test write.',
         });
-        expect(result).toMatchObject({ ok: true, controlName: 'integration_safe_write' });
+        expect(result).toMatchObject({ ok: true, mutation: { outcome: 'accepted' } });
       } finally {
         await client.close();
         await server.close();
@@ -102,14 +100,11 @@ describeWithEndpoint('real OPC UA integration', () => {
 
 interface BuildConfigOptions {
   readNodeId?: string;
-  writeNodeId?: string;
-  writeValue?: string;
-  writeDataType?: string;
 }
 
 function buildConfig(options: BuildConfigOptions = {}): AppConfig {
   return appConfigSchema.parse({
-    version: 1,
+    version: 2,
     connection: {
       endpointUrl: requireEnv('OPCUA_TEST_ENDPOINT'),
       securityMode: process.env['OPCUA_TEST_SECURITY_MODE'] ?? 'None',
@@ -123,52 +118,52 @@ function buildConfig(options: BuildConfigOptions = {}): AppConfig {
           : [],
     },
     audit: { file: './integration-audit.jsonl' },
-    controls:
-      options.writeNodeId !== undefined && options.writeValue !== undefined
-        ? { items: [buildWriteControl(options.writeNodeId, options.writeValue, options.writeDataType ?? 'String')] }
-        : { items: [] },
   });
 }
 
 function buildAuth(): AppConfig['connection']['auth'] {
-  if (process.env['OPCUA_TEST_USERNAME'] === undefined && process.env['OPCUA_TEST_PASSWORD'] === undefined) {
+  if (
+    process.env['OPCUA_TEST_USERNAME'] === undefined &&
+    process.env['OPCUA_TEST_PASSWORD'] === undefined
+  ) {
     return { type: 'anonymous' };
   }
-  if (process.env['OPCUA_TEST_USERNAME'] === undefined || process.env['OPCUA_TEST_PASSWORD'] === undefined) {
-    throw new Error('Set both OPCUA_TEST_USERNAME and OPCUA_TEST_PASSWORD for username/password auth.');
+  if (
+    process.env['OPCUA_TEST_USERNAME'] === undefined ||
+    process.env['OPCUA_TEST_PASSWORD'] === undefined
+  ) {
+    throw new Error(
+      'Set both OPCUA_TEST_USERNAME and OPCUA_TEST_PASSWORD for username/password auth.',
+    );
   }
-  return { type: 'usernamePassword', username: '${OPCUA_TEST_USERNAME}', password: '${OPCUA_TEST_PASSWORD}' };
-}
-
-function buildWriteControl(nodeId: string, rawValue: string, dataType: string): Record<string, unknown> {
-  const base = {
-    name: 'integration_safe_write',
-    description: 'Operator-approved safe integration test write.',
-    nodeId,
-    riskLevel: 'low',
-    riskNote: 'Only use with simulator, test, or otherwise safe Nodes approved by an Operator.',
+  return {
+    type: 'usernamePassword',
+    username: '${OPCUA_TEST_USERNAME}',
+    password: '${OPCUA_TEST_PASSWORD}',
   };
-  if (dataType === 'Boolean') {
-    return { ...base, dataType: 'Boolean', falseLabel: 'false', trueLabel: 'true' };
-  }
-  if (['SByte', 'Byte', 'Int16', 'UInt16', 'Int32', 'UInt32', 'Float', 'Double'].includes(dataType)) {
-    const numericValue = Number(rawValue);
-    const spread = Math.max(Math.abs(numericValue), 1);
-    return { ...base, dataType, unit: 'integration_test_unit', min: numericValue - spread, max: numericValue + spread };
-  }
-  return { ...base, dataType: 'String', allowedValues: [{ label: 'test_value', value: rawValue }] };
 }
 
 function normalizeWriteInput(rawValue: string, dataType: string): unknown {
-  if (dataType === 'Boolean') return rawValue === 'true' ? 'true' : 'false';
-  if (['SByte', 'Byte', 'Int16', 'UInt16', 'Int32', 'UInt32', 'Float', 'Double'].includes(dataType)) {
+  if (dataType === 'Boolean') {
+    if (rawValue !== 'true' && rawValue !== 'false')
+      throw new Error('Boolean write value must be true or false.');
+    return rawValue === 'true';
+  }
+  if (
+    ['SByte', 'Byte', 'Int16', 'UInt16', 'Int32', 'UInt32', 'Float', 'Double'].includes(dataType)
+  ) {
     return Number(rawValue);
   }
-  return 'test_value';
+  return rawValue;
 }
 
 async function connectTestClient(config: AppConfig, gateway: OpcUaGateway) {
-  const server = createMcpServer({ config, configHash: 'integration', gateway, auditSink: healthyAuditSink() });
+  const server = createMcpServer({
+    config,
+    configHash: 'integration',
+    gateway,
+    auditSink: healthyAuditSink(),
+  });
   const client = new Client({ name: 'real-opcua-integration-test', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -192,7 +187,11 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function callJsonTool(client: Client, name: string, args: Record<string, unknown>): Promise<unknown> {
+async function callJsonTool(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
   const result = (await client.callTool({ name, arguments: args })) as ToolTextResult;
   const content = result.content[0];
   if (content === undefined) throw new Error(`No text content for ${name}`);

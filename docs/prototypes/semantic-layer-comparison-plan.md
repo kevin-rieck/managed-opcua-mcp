@@ -1,5 +1,7 @@
 # Semantic approach comparison plan
 
+> Historical research/prototype, not current product behavior or operator guidance. Commissioning and the catalog were retired without replacement; see the [operator guide](../operator-guide.md).
+
 Plan for [#29 — Compare OPC UA-native, generated, and Operator-authored semantic approaches](https://github.com/kevin-rieck/managed-opcua-mcp/issues/29), arising from the decision in [#27](https://github.com/kevin-rieck/managed-opcua-mcp/issues/27) not to define a Semantic Layer domain model before testing the underlying need.
 
 ## Question

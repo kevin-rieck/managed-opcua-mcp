@@ -1,3 +1,6 @@
+import type { NativeDataType, NativeNodeId, NativeScalar } from './native-encoding.js';
+import type { StatusCode } from './status-code.js';
+
 export type OpcUaConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 
 export interface OpcUaStatus {
@@ -28,13 +31,14 @@ export interface ReadValueResult {
   dataType?: string;
   value: unknown;
   opcuaStatus?: string;
+  statusCode?: StatusCode;
   sourceTimestamp?: string;
   serverTimestamp?: string;
 }
 
-export interface WriteValueResult {
-  opcuaStatus: string;
-}
+export type NativeWriteResult =
+  | { kind: 'operation'; statusCode?: StatusCode }
+  | { kind: 'service_error'; statusCode?: StatusCode };
 
 export interface NodeMetadataResult {
   exists?: boolean;
@@ -50,6 +54,13 @@ export interface NodeMetadataResult {
     valueRank?: string;
     userAccessLevel?: string;
   };
+  attributeStatusCodes?: {
+    browse?: StatusCode;
+    nodeId?: StatusCode;
+    dataType?: StatusCode;
+    valueRank?: StatusCode;
+    userAccessLevel?: StatusCode;
+  };
 }
 
 export interface OpcUaGateway {
@@ -59,6 +70,10 @@ export interface OpcUaGateway {
   browse(nodeId: string, depth: number): Promise<BrowseNodeResult[]>;
   read(nodeId: string): Promise<ReadValueResult>;
   readMany(nodeIds: string[]): Promise<ReadValueResult[]>;
-  write(nodeId: string, dataType: string, value: unknown): Promise<WriteValueResult>;
+  writeNative(
+    nodeId: NativeNodeId,
+    dataType: NativeDataType,
+    value: NativeScalar,
+  ): Promise<NativeWriteResult>;
   getNodeMetadata?(nodeId: string): Promise<NodeMetadataResult>;
 }

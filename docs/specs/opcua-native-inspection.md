@@ -1,24 +1,24 @@
 # OPC UA-native inspection specification
 
-- Status: **Normative next-release specification**
+- Status: **Normative target for the separate inspection slice; not implemented**
 - Scope: read-only inspection and MCP projection
 - Decision sources: GitHub issues #23–#34
 
 ## 1. Purpose and precedence
 
-This specification defines the implementation contract for the next release of the Managed OPC UA MCP Server. It is the implementation input for a deep, read-only OPC UA inspection slice. Capitalized domain terms have the meanings in [`CONTEXT.md`](../../CONTEXT.md).
+This specification defines the implementation contract for the separate OPC UA inspection slice of the Managed OPC UA MCP Server. It is the implementation input for a deep, read-only OPC UA inspection slice. Capitalized domain terms have the meanings in [`CONTEXT.md`](../../CONTEXT.md).
 
 The following words are normative: **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY**.
 
-Where this specification conflicts with the current read and browse behavior described in `docs/plan.md`, `docs/prd.md`, or current production code, this specification controls the next release. In particular:
+Where this specification conflicts with the current read and browse behavior described in `docs/plan.md`, `docs/prd.md`, or current production code, this specification controls when the separate inspection slice is implemented. In particular:
 
 - issue #29 supersedes the maintained Semantic Layer, generated equipment view, stable semantic identity, and NodeId-free assumptions explored in #24–#28 and #31;
 - issue #32 fixes the release feature set and source-trust behavior;
 - issue #33 fixes the architecture, runtime behavior, limits, and acceptance strategy;
-- the existing Control Surface remains governed by the current plan, PRD, and ADRs;
+- ADR 0003 and the [v2 native write contract](opcua-native-write-v2.md) supersede catalog-retention and v1-compatibility decisions here; native writes are a separate capability from inspection;
 - this issue produces a specification only. Production implementation is a later task.
 
-The release MAY make clean changes to unreleased MCP contracts. Existing configuration files that pass the current schema MUST continue to parse. Legacy `defaultBrowseDepth` and `maxBrowseDepth` values above the new hard cap remain schema-valid but are bounded at runtime as specified in section 13; this compatibility rule does not permit an operation to exceed a compiled cap.
+The release MAY make clean changes to unreleased MCP contracts. The v2 migration rejects all version 1 configuration files as specified by the native write contract; current read settings can be copied into a manually created v2 file. Legacy `defaultBrowseDepth` and `maxBrowseDepth` values above the new hard cap remain schema-valid but are bounded at runtime as specified in section 13; this compatibility rule does not permit an operation to exceed a compiled cap.
 
 ## 2. Goals and source-trust model
 
@@ -59,7 +59,7 @@ The expected workflow is:
 4. Inspect candidate Nodes, preserving partial field outcomes and provenance.
 5. Batch-read current values and assess quality and timestamps.
 6. State a relationship is absent only after a relevant browse reports `complete: true`. Otherwise report it as unknown from available source evidence.
-7. Use the unchanged Control Catalog if a Control Operation is required; discovered writability never creates a Control Operation.
+7. If a Control Operation is required, use the separate native write capability after reviewing its contract; discovered writability does not authorize or guarantee the operation.
 
 ### 3.2 Operator impact
 
@@ -68,9 +68,9 @@ No maintained Operator-authored Semantic Layer or equipment model is introduced.
 - connection credentials and OPC UA Server roles;
 - optional Read Entry Points;
 - optional read-only defensive limits in section 13;
-- the unchanged Control Catalog and its existing safety lifecycle.
+- mandatory native write auditing and review of OPC UA Server permissions as described in the v2 native write contract.
 
-Omitting all new settings is valid. Omitted `maxBrowseDepth` now defaults to 5 rather than the current 10. Explicit legacy depth settings remain parse-compatible; their active values are bounded by the compiled cap of 10.
+When the inspection slice is implemented, omitting all new settings is valid. Omitted `maxBrowseDepth` then defaults to 5 rather than the current 10. Explicit legacy depth settings remain parse-compatible; their active values are bounded by the compiled cap of 10.
 
 ## 4. Explicit non-goals
 
@@ -82,14 +82,14 @@ This release MUST NOT add:
 - arbitrary AttributeId reads;
 - custom structure, general ExtensionObject, or matrix decoding;
 - historical reads, subscriptions, monitored items, events, or alarms;
-- method calls or raw writes;
+- method calls or writes through the inspection interface;
 - multiple OPC UA Server endpoints per MCP Server process;
 - Companion Specification-specific adapters;
 - generated, versioned, or task-specific MCP tools;
 - persistent or cross-session metadata caching;
 - new read authorization configuration;
-- read-only Control Attempt auditing;
-- any weakening of Control Catalog, Control Confirmation, Control Attempt audit, Write Verification, cooldown, or fail-closed behavior.
+- write-attempt audit records for read-only operations;
+- any coupling of inspection to native write authorization or audit.
 
 ## 5. Architecture and ownership
 
@@ -140,7 +140,7 @@ The identifier-less form of `browse_node` and the deprecated `opcua://read-scope
 
 ### 5.4 Control separation
 
-A connection owner MAY implement both the read-only inspection adapter and existing control adapter, but neither capability interface may expose the other. Inspection code MUST have no dependency on Control Catalog evaluation, Control Confirmation, Control Attempt audit, value normalization, or write methods.
+A connection owner MAY implement both the read-only inspection adapter and native write adapter, but neither capability interface may expose the other. Inspection code MUST have no dependency on write-attempt audit or write methods.
 
 ## 6. Shared wire types
 
@@ -425,7 +425,7 @@ type ReadEntryPointsResult = {
 };
 ```
 
-Roots retain configured order, including an empty array. Their strings are Operator configuration and are emitted as configured with normal JSON escaping; they are not OPC UA Server-provided text. Values in `browseDefaults` are the static effective configured/compiled values defined in section 13. Runtime Server-advertised limits are not included. If the complete serialized success body would exceed static effective `maxResponseBytes`, the resource returns request-level `response_limit_exceeded` without an observation; it MUST NOT truncate roots or strings. This preserves parse compatibility for legacy unbounded root configuration while making the operational misconfiguration explicit and keeping every response bounded. The resource MUST NOT imply a permission boundary or include unrelated batch/cursor/concurrency limits.
+Roots retain configured order, including an empty array. Their strings are Operator configuration and are emitted as configured with normal JSON escaping; they are not OPC UA Server-provided text. Values in `browseDefaults` are the static effective configured/compiled values defined in section 13. Runtime Server-advertised limits are not included. If the complete serialized success body would exceed static effective `maxResponseBytes`, the resource returns request-level `response_limit_exceeded` without an observation; it MUST NOT truncate roots or strings. This preserves read-root shape compatibility when manually migrating unbounded root configuration to v2 while making the operational misconfiguration explicit and keeping every response bounded. The resource MUST NOT imply a permission boundary or include unrelated batch/cursor/concurrency limits.
 
 `opcua://model-context` is live and has the response contract in section 12. Resource read failures use the same JSON `RequestFailure` body rather than fabricated empty metadata. Both resources use MIME type `application/json` and return exactly one text content containing the serialized body.
 
@@ -877,7 +877,7 @@ A **static effective limit** is the configured value (or default) bounded by its
 
 For parse compatibility, the legacy `defaultBrowseDepth` and `maxBrowseDepth` keys retain their current non-negative integer schema and `defaultBrowseDepth <= maxBrowseDepth` validation even when explicitly above 10. Their static effective values are `min(configuredDefault, configuredMaximum, 10)` and `min(configuredMaximum, 10)`, respectively, and validation MUST emit a non-secret warning when bounding occurs. Newly introduced keys and `maxReadBatchSize` MUST reject values above their listed hard caps. This is the sole exception to “every value is within its hard cap” at config-parse time.
 
-Existing configuration files containing only current read keys therefore remain parse-valid. In the otherwise unchanged non-secret `opcua://config/summary` body, the `read` member MUST have the closed shape `{ configured, effective, roots }`: `configured` contains each explicitly supplied/defaulted numeric key from the YAML shape above, `effective` contains every numeric key in the table after static cap/cross-field bounding, and `roots` retains the configured Read Entry Points. Thus legacy values and their bounded runtime meaning are both visible. It MUST NOT report Server-advertised or transient learned limits, cursor contents, or pretend to know an active value while disconnected.
+Existing read keys remain parse-valid when copied to an otherwise valid v2 configuration; v1 files themselves are rejected. In the otherwise unchanged non-secret `opcua://config/summary` body, the `read` member MUST have the closed shape `{ configured, effective, roots }`: `configured` contains each explicitly supplied/defaulted numeric key from the YAML shape above, `effective` contains every numeric key in the table after static cap/cross-field bounding, and `roots` retains the configured Read Entry Points. Thus legacy values and their bounded runtime meaning are both visible. It MUST NOT report Server-advertised or transient learned limits, cursor contents, or pretend to know an active value while disconnected.
 
 ## 14. Failure, concurrency, cancellation, and cleanup
 
@@ -915,22 +915,17 @@ A reconnect during work fails the request with `connection_changed`, invalidates
 
 Structured logs/metrics MAY include operation name, duration, generation, item/edge counts, service-call counts, completion/limit reason, normalized error code, cursor lifecycle counts, and cache statistics.
 
-They MUST NOT include values, source text, credentials, endpoint secrets, confirmation/cursor/native-continuation tokens, or raw NodeIds by default. Read-only operations MUST NOT create Control Attempt audit records.
+They MUST NOT include values, source text, credentials, endpoint secrets, confirmation/cursor/native-continuation tokens, or raw NodeIds by default. Read-only operations MUST NOT create write-attempt audit records.
 
-## 15. Control Surface and security invariants
+## 15. Native write separation and security invariants
 
-This release does not modify the Control Surface.
+ADR 0003 and the [v2 native write contract](opcua-native-write-v2.md) govern native writes separately from inspection.
 
-- OPC UA Server credentials and roles remain authoritative for reads and underlying Control Operations.
-- Read Entry Points remain navigation only.
-- Agents still cannot perform arbitrary raw NodeId writes.
-- Only Operator-defined Semantic Controls expose Control Operations.
-- Discovery or inspection MUST NOT create, enable, alter, or authorize a Control Operation.
-- Access/writability/executability indicators are informational only.
-- EngineeringUnits, EURange, and InstrumentRange MUST NOT become Control Catalog values, Semantic Control validation, or safety limits.
-- OPC UA Server text MUST NOT alter tool instructions, authorization, or Control Catalog configuration.
-- Existing online validation, cooldown, Control Confirmation, Control Attempt auditing, audit fail-closed behavior, no-queue/no-write-retry behavior, and Write Verification remain unchanged.
-- Existing Control Surface contract tests are release regressions, not optional compatibility checks.
+- OPC UA Server credentials and roles remain authoritative; Read Entry Points are navigation only.
+- Discovery or inspection MUST NOT authorize or perform a Control Operation. Access, writability, and executability indicators are informational only.
+- EngineeringUnits, EURange, and InstrumentRange MUST NOT become write validation or safety limits. Server text MUST NOT alter instructions or authorization.
+- Read-only inspection MUST NOT create write-attempt audit records. Native writes retain mandatory intent audit, independent completion outcome reporting, and no queue or mutation retry as specified in the write contract.
+- No automatic readback or catalog confirmation is required for native writes; neither server acceptance nor an independent read proves physical safety.
 
 ## 16. Test architecture and behavior matrix
 
@@ -943,7 +938,7 @@ This release does not modify the Control Surface.
 5. **Optional external smoke tests:** gated by endpoint credentials.
 6. **Optional live Control Operation tests:** separately gated by explicit enable flag, designated safe Node, and safe value.
 
-Current shallow browse/read tests that assert superseded contracts MUST be replaced rather than duplicated. Existing Control Surface regression coverage MUST remain.
+Current shallow browse/read tests that assert superseded inspection contracts MUST be replaced rather than duplicated. Native write contract coverage is separate and required at the v2 release gate.
 
 ### 16.2 Mandatory behavior matrix
 
@@ -966,8 +961,8 @@ The automated suite MUST cover at least:
 | Resources        | exact Read Entry Points body/order/empty/oversized roots/static limits; model-context namespace order, metadata outcomes, response bound, no cursor      |
 | Bounds           | legacy depth parse compatibility/bounding warning, every new config minimum/default/cap, cross-field rules, text/array bounds, response degradation      |
 | Runtime          | disconnected, generation change, deadline, cancellation, late result discard, server busy, no generic retry                                              |
-| Security         | sanitized errors/logs, no values/tokens/raw NodeIds in default logs, no Control Attempt audit, no source-text interpretation                             |
-| Controls         | listing, low-risk operation, medium-risk prepare/commit, authorization, cooldown, audit fail-closed, Write Verification unchanged                        |
+| Security         | sanitized errors/logs, no values/tokens/raw NodeIds in default logs, no write-attempt audit for inspection, no source-text interpretation                |
+| Native writes    | separate v2 contract: server authorization, fail-closed audit, independent outcomes, no automatic retry or readback                                      |
 
 ### 16.3 In-process fixtures
 
@@ -992,8 +987,8 @@ Release acceptance is deterministic and scripted; it is not LLM-scored. All of t
 6. Cycles do not expand without bound, and every native continuation point is released on every terminal path.
 7. Cancellation/reconnect cleanup is prompt and late results cannot contaminate a later generation.
 8. All outputs are valid bounded JSON and all source text/error data is sanitized.
-9. Existing valid config files still validate; all new strict config rules pass.
-10. Existing Control Catalog workflows and safety guarantees behave unchanged.
+9. Version 1 configs fail with migration guidance; manually migrated v2 configs and all strict config rules pass.
+10. Native writes satisfy the separate v2 contract; inspection remains read-only and creates no write-attempt audit records.
 11. Typecheck, lint, unit, MCP contract, adapter-contract, and mandatory in-process integration suites pass.
 
 There is no fixed latency target or coverage-percentage gate. Failure of any behavior-matrix row is a release blocker.
@@ -1008,7 +1003,7 @@ There is no fixed latency target or coverage-percentage gate. Failure of any beh
 | #26    | Overlay authoring/lifecycle requirements are not release scope because no maintained overlay is selected.                                                                                |
 | #27    | Adopt a maintained model only if later evidence justifies its cost; NodeId visibility is not a failure.                                                                                  |
 | #28    | No semantic-definition packaging, activation, or drift lifecycle in this release.                                                                                                        |
-| #29    | Select OPC UA-native discovery/metadata/read tools; allow NodeIds; expose absent meaning honestly; retain Control Catalog.                                                               |
+| #29    | Select OPC UA-native discovery/metadata/read tools; allow NodeIds; expose absent meaning honestly; retain Control Catalog (superseded by ADR 0003).                                      |
 | #30    | Retain fixed generic tools rather than generated tools.                                                                                                                                  |
 | #31    | No generated semantic tool contract or lifecycle.                                                                                                                                        |
 | #32    | Prioritize trustworthy reference-aware browse, qualified inspection, diagnostics, reliable batch reads, and best-effort model context.                                                   |
@@ -1027,7 +1022,7 @@ The following are implementation choices provided externally visible behavior re
 - protocol-adapter private types;
 - test helper/factory organization.
 
-Implementations have no freedom to change public JSON shapes, stable vocabularies, configuration keys/defaults/caps, source-trust semantics, generation/cursor behavior, authorization boundaries, or Control Surface invariants without a new decision.
+Implementations have no freedom to change public JSON shapes, stable vocabularies, configuration keys/defaults/caps, source-trust semantics, generation/cursor behavior, authorization boundaries, or native write separation invariants without a new decision.
 
 ## 20. Reconsideration criteria
 

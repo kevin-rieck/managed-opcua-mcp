@@ -6,12 +6,16 @@ import { createMcpServer } from '../../src/mcp/server.js';
 import type { OpcUaGateway, OpcUaStatus } from '../../src/opcua/gateway.js';
 
 const config = appConfigSchema.parse({
-  version: 1,
+  version: 2,
   connection: {
     endpointUrl: 'opc.tcp://localhost:4840',
     securityMode: 'None',
     securityPolicy: 'None',
-    auth: { type: 'usernamePassword', username: '${OPCUA_USERNAME}', password: '${OPCUA_PASSWORD}' },
+    auth: {
+      type: 'usernamePassword',
+      username: '${OPCUA_USERNAME}',
+      password: '${OPCUA_PASSWORD}',
+    },
   },
   read: {
     defaultBrowseDepth: 2,
@@ -20,22 +24,6 @@ const config = appConfigSchema.parse({
     roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.' }],
   },
   audit: { file: './audit.jsonl' },
-  controls: {
-    enabled: false,
-    items: [
-      {
-        name: 'set_motor_speed',
-        description: 'Sets motor speed.',
-        nodeId: 'ns=2;s=Motor.SpeedSetpoint',
-        dataType: 'Double',
-        unit: 'rpm',
-        min: 0,
-        max: 1800,
-        riskLevel: 'medium',
-        riskNote: 'Changes motor speed.',
-      },
-    ],
-  },
 });
 
 describe('MCP metadata resources', () => {
@@ -59,7 +47,6 @@ describe('MCP metadata resources', () => {
           lastError: { code: 'ECONNREFUSED', at: '2026-07-05T00:00:00.000Z' },
         },
         onlineValidation: { state: 'pending' },
-        controls: { configured: 1, lowRisk: 0, mediumRisk: 1, enabled: false },
         audit: { healthy: true },
         configHash: 'abc123',
       });
@@ -82,7 +69,7 @@ describe('MCP metadata resources', () => {
       const readEntryPoints = await readJsonResource(client, 'opcua://read-entry-points');
 
       expect(configSummary).toMatchObject({
-        version: 1,
+        version: 2,
         connection: {
           endpointUrl: 'opc.tcp://localhost:4840',
           securityMode: 'None',
@@ -96,10 +83,10 @@ describe('MCP metadata resources', () => {
           roots: [{ nodeId: 'ns=2;s=Machine', label: 'machine', description: 'Main machine.' }],
         },
         audit: { file: './audit.jsonl', maxReasonLength: 1000 },
-        controls: { enabled: false, configured: 1 },
         configHash: 'abc123',
       });
       expect(configSummary).not.toHaveProperty('server');
+      expect(configSummary).not.toHaveProperty('controls');
       expect(readEntryPoints).toMatchObject({
         defaultBrowseDepth: 2,
         maxBrowseDepth: 5,
@@ -118,7 +105,10 @@ async function connectTestClient(config: AppConfig, status: OpcUaStatus) {
     config,
     configHash: 'abc123',
     gateway: fakeGateway(status),
-    auditSink: { health: () => Promise.resolve({ healthy: true }), append: (record) => Promise.resolve({ id: record.id }) },
+    auditSink: {
+      health: () => Promise.resolve({ healthy: true }),
+      append: (record) => Promise.resolve({ id: record.id }),
+    },
   });
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -141,6 +131,6 @@ function fakeGateway(status: OpcUaStatus): OpcUaGateway {
     browse: () => Promise.reject(new Error('not used')),
     read: () => Promise.reject(new Error('not used')),
     readMany: () => Promise.reject(new Error('not used')),
-    write: () => Promise.reject(new Error('not used')),
+    writeNative: () => Promise.reject(new Error('not used')),
   };
 }

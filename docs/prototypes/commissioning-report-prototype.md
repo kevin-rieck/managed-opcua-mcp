@@ -1,5 +1,7 @@
 # PROTOTYPE — OPC UA MCP Commissioning Report
 
+> Historical research/prototype, not current product behavior or operator guidance. Commissioning and the catalog were retired without replacement; see the [operator guide](../operator-guide.md).
+
 Prototype for [Prototype the commissioning report shape](https://github.com/kevin-rieck/managed-opcua-mcp/issues/5).
 
 This is a throwaway shape prototype, not production documentation. It uses fictional data and intentionally favors review flow over raw discovery dumps.
